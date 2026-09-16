@@ -16,11 +16,11 @@
     "dist": "npm run build:renderer && electron-builder --win"
   },
   "dependencies": {
-    "@fontsource/noto-sans-jp": "^5.3.0",
-    "@toast-ui/editor": "^3.2.2",
     "gray-matter": "^4.0.3"
   },
   "devDependencies": {
+    "@fontsource/noto-sans-jp": "^5.3.0",
+    "@toast-ui/editor": "^3.2.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",

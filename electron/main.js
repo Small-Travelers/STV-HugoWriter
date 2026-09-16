@@ -360,6 +360,11 @@ async function gitInfo() {
   if (ver.code !== 0) return { gitInstalled: false, isRepo: false };
   if (!site.root) return { gitInstalled: true, isRepo: false };
 
+  // サイトフォルダ自体がリポジトリのルートである場合のみ Git 機能を有効にする
+  // (親フォルダのリポジトリを誤って操作しないため)
+  if (!fs.existsSync(path.join(site.root, '.git'))) {
+    return { gitInstalled: true, isRepo: false };
+  }
   const inTree = await runGit(['rev-parse', '--is-inside-work-tree'], site.root);
   if (inTree.code !== 0 || !inTree.out.includes('true')) {
     return { gitInstalled: true, isRepo: false };

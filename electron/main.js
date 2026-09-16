@@ -1,6 +1,6 @@
 // HugoWriter - Electron メインプロセス
 // サイト(Hugoプロジェクト)の読み書き・Hugoプレビューサーバの管理・設定管理を担当する。
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
@@ -628,6 +628,181 @@ async function gitClone(url) {
 }
 
 // ---------------------------------------------------------------------------
+// サイトの公開 (FTP / FTPS アップロード)
+// ---------------------------------------------------------------------------
+// 接続先は管理者が wpgen.site.json の deploy に定義する。
+// パスワードだけは各ユーザーの PC に暗号化して保存する (設定ファイルには書かない)。
+
+function deployConfig() {
+  const d = (site.config && site.config.deploy) || {};
+  if (!d.host || !d.user) return null;
+  return {
+    protocol: d.protocol === 'ftps' ? 'ftps' : 'ftp',
+    host: String(d.host),
+    port: Number(d.port) || 21,
+    user: String(d.user),
+    remoteDir: String(d.remoteDir || '/'),
+    baseURL: d.baseURL ? String(d.baseURL) : '',
+  };
+}
+
+function secretsPath() {
+  return path.join(app.getPath('userData'), 'deploy-secrets.json');
+}
+
+function secretKey(cfg) {
+  return `${cfg.user}@${cfg.host}:${cfg.port}`;
+}
+
+function loadSecrets() {
+  try {
+    return JSON.parse(fs.readFileSync(secretsPath(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function getSavedPassword(cfg) {
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  const enc = loadSecrets()[secretKey(cfg)];
+  if (!enc) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
+function savePassword(cfg, password) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('この PC ではパスワードの暗号化保存が利用できません');
+  }
+  const secrets = loadSecrets();
+  secrets[secretKey(cfg)] = safeStorage.encryptString(password).toString('base64');
+  fs.mkdirSync(path.dirname(secretsPath()), { recursive: true });
+  fs.writeFileSync(secretsPath(), JSON.stringify(secrets, null, 2), 'utf8');
+}
+
+function clearPassword(cfg) {
+  const secrets = loadSecrets();
+  delete secrets[secretKey(cfg)];
+  fs.writeFileSync(secretsPath(), JSON.stringify(secrets, null, 2), 'utf8');
+}
+
+function deployState() {
+  assertSiteOpen();
+  const cfg = deployConfig();
+  if (!cfg) return { configured: false };
+  return {
+    configured: true,
+    protocol: cfg.protocol,
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    remoteDir: cfg.remoteDir,
+    passwordSaved: !!getSavedPassword(cfg),
+    canSavePassword: safeStorage.isEncryptionAvailable(),
+  };
+}
+
+/** 公開用に Hugo をビルドする (下書きは含めない)。出力先のパスを返す */
+function buildForPublish(cfg) {
+  const hugo = findHugoBinary();
+  if (!hugo) throw new Error('Hugo が見つかりません');
+  const outDir = path.join(app.getPath('temp'), 'wpgen-publish');
+  const args = [
+    '--source', site.hugoRoot,
+    '--destination', outDir,
+    '--cleanDestinationDir',
+    '--minify',
+  ];
+  if (cfg.baseURL) args.push('-b', cfg.baseURL);
+  const r = spawnSync(hugo, args, { shell: hugo === 'hugo', windowsHide: true, encoding: 'utf8' });
+  if (r.status !== 0) {
+    throw new Error('サイトのビルドに失敗しました:\n' + String(r.stderr || r.stdout || '').slice(-800));
+  }
+  if (!fs.existsSync(path.join(outDir, 'index.html'))) {
+    throw new Error('ビルド結果に index.html がありません。サイト設定を確認してください');
+  }
+  return outDir;
+}
+
+let deployRunning = false;
+
+async function deployRun(passwordInput, saveFlag) {
+  assertSiteOpen();
+  if (deployRunning) throw new Error('公開処理が既に実行中です');
+  const cfg = deployConfig();
+  if (!cfg) throw new Error('公開先が設定されていません (wpgen.site.json の deploy)。管理者に確認してください');
+
+  const password = passwordInput || getSavedPassword(cfg);
+  if (!password) throw new Error('パスワードを入力してください');
+
+  deployRunning = true;
+  const started = Date.now();
+  const sendProgress = (info) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('deploy-progress', info);
+    }
+  };
+  try {
+    sendProgress({ phase: 'build' });
+    const outDir = buildForPublish(cfg);
+
+    sendProgress({ phase: 'connect' });
+    const ftp = require('basic-ftp');
+    const client = new ftp.Client(30000);
+    try {
+      await client.access({
+        host: cfg.host,
+        port: cfg.port,
+        user: cfg.user,
+        password,
+        secure: cfg.protocol === 'ftps',
+      });
+      let files = 0;
+      client.trackProgress((info) => {
+        if (info.type === 'upload') {
+          sendProgress({ phase: 'upload', file: info.name, bytes: info.bytesOverall });
+        }
+      });
+      // 総ファイル数 (進捗表示用)
+      const countFiles = (dir) => {
+        let n = 0;
+        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          n += ent.isDirectory() ? countFiles(path.join(dir, ent.name)) : 1;
+        }
+        return n;
+      };
+      files = countFiles(outDir);
+      sendProgress({ phase: 'upload', total: files });
+      await client.ensureDir(cfg.remoteDir);
+      await client.uploadFromDir(outDir);
+      client.trackProgress();
+
+      // 接続に成功したときだけパスワードを保存する
+      if (saveFlag && passwordInput) savePassword(cfg, passwordInput);
+
+      const sec = Math.round((Date.now() - started) / 1000);
+      return { files, seconds: sec };
+    } finally {
+      client.close();
+    }
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (/530|Login incorrect|Authentication/i.test(msg)) {
+      throw new Error('ログインに失敗しました。ユーザー名とパスワードを確認してください');
+    }
+    if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|Timeout/i.test(msg)) {
+      throw new Error(`サーバに接続できません (${cfg.host}:${cfg.port})。ネットワークと接続先設定を確認してください`);
+    }
+    throw e;
+  } finally {
+    deployRunning = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // サイトを開く
 // ---------------------------------------------------------------------------
 function openSite(root) {
@@ -724,6 +899,14 @@ ipcMain.handle('git:sync', wrap(() => gitSync()));
 ipcMain.handle('git:clone', wrap((url) => gitClone(url)));
 
 ipcMain.handle('app:info', wrap(() => ({ version: app.getVersion() })));
+
+ipcMain.handle('deploy:state', wrap(() => deployState()));
+ipcMain.handle('deploy:run', wrap((password, save) => deployRun(password, save)));
+ipcMain.handle('deploy:clearPassword', wrap(() => {
+  const cfg = deployConfig();
+  if (cfg) clearPassword(cfg);
+  return { ok: true };
+}));
 
 ipcMain.handle('preview:start', wrap(() => startPreview()));
 ipcMain.handle('preview:stop', wrap(() => stopPreview()));

@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import EditorPane from './components/EditorPane';
 import SettingsDialog from './components/SettingsDialog';
 import NewArticleDialog from './components/NewArticleDialog';
+import PublishDialog from './components/PublishDialog';
 
 type Screen = 'loading' | 'setup' | 'main';
 
@@ -26,6 +27,8 @@ export default function App() {
   const [cloneUrl, setCloneUrl] = useState('');
   const [cloneBusy, setCloneBusy] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPublish, setShowPublish] = useState(false);
+  const [deployConfigured, setDeployConfigured] = useState(false);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [setupError, setSetupError] = useState('');
   const [toast, setToast] = useState('');
@@ -77,12 +80,17 @@ export default function App() {
           const p = await api.preview.start();
           if (p.ok && p.url) setPreviewUrl(p.url);
         }
+        if (params.has('autodeploy')) {
+          const d = await api.deploy.run(params.get('autodeploy') || '', false);
+          showToast(d.ok ? `deploy OK: ${d.files} files / ${d.seconds}s` : `deploy NG: ${d.error}`);
+        }
         if (params.has('autogit')) {
           const g = params.get('autogit') === 'pull' ? await api.git.pull() : await api.git.sync();
           showToast(g.ok ? `git: ${g.message || 'OK'}${g.conflict ? ' [conflict]' : ''}` : `git NG: ${g.error}`);
         }
       }
       refreshGit();
+      api.deploy.state().then((d) => setDeployConfigured(!!(d.ok && d.configured)));
       return true;
     },
     [refreshGit, showToast]
@@ -301,6 +309,9 @@ export default function App() {
           >
             {previewLoading ? '起動中…' : previewUrl ? 'プレビューを閉じる' : 'サイトをプレビュー'}
           </button>
+          {deployConfigured && (
+            <button className="btn publish" onClick={() => setShowPublish(true)}>サイトを公開</button>
+          )}
           <button className="btn" onClick={() => setShowSettings(true)}>設定</button>
         </div>
       </header>
@@ -376,6 +387,8 @@ export default function App() {
           onCancel={() => setShowNewDialog(false)}
         />
       )}
+
+      {showPublish && <PublishDialog onClose={() => setShowPublish(false)} />}
 
       {gitDialogMsg && (
         <div className="modal-backdrop" onClick={() => setGitDialogMsg('')}>

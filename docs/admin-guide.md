@@ -46,7 +46,7 @@
 | `frontMatterFields` | 記事編集画面の入力欄。`type` は `string` (1行) / `text` (複数行) / `date` (日時) / `boolean` (チェック) / `list` (カンマ区切り)。 |
 | `newArticle.filenamePattern` | 新規記事のファイル名。`{date}` = 作成日 (YYYY-MM-DD)、`{slug}` = タイトルから生成。 |
 | `newArticle.defaultFrontMatter` | 新規記事に最初から入る front matter。`{ "draft": true }` を推奨。 |
-| `deploy` | 将来の FTP アップロード機能用 (現時点では未使用)。 |
+| `deploy` | サイト公開 (FTP アップロード) の接続先。下記「サイトの公開」を参照。 |
 
 ファイルは UTF-8 で保存してください (BOM 付きでも可)。
 JSON の書式が壊れているとサイトを開けなくなるので、変更後は自分の PC で一度開いて確認してから配布 (コミット) してください。
@@ -59,6 +59,36 @@ JSON の書式が壊れているとサイトを開けなくなるので、変更
 - セクションやトップページの `_index.md` は「見出しページ」バッジ付きで各セクションの先頭に表示され、
   通常の記事と同じように編集できます。`_index.md` しか無いフォルダも一覧に表示されます。
 - front matter は YAML (`---`) と TOML (`+++`) の両方に対応し、保存時も元の形式を維持します。
+
+## サイトの公開 (FTP アップロード, v0.3 から)
+
+`wpgen.site.json` の `deploy` に接続先を書くと、アプリ上部に「サイトを公開」ボタンが表示されます。
+
+```json
+"deploy": {
+  "protocol": "ftp",
+  "host": "ftp.example.com",
+  "port": 21,
+  "user": "ftp-user",
+  "remoteDir": "/public_html",
+  "baseURL": "https://example.com/"
+}
+```
+
+| 項目 | 説明 |
+| --- | --- |
+| `protocol` | `ftp` または `ftps` (FTPS = TLS 暗号化。サーバが対応していれば `ftps` を推奨)。 |
+| `host` / `port` | サーバのホスト名とポート (省略時 21)。 |
+| `user` | FTP ユーザー名。 |
+| `remoteDir` | アップロード先のディレクトリ (例: `/public_html`)。 |
+| `baseURL` | 公開 URL。ビルド時に `hugo -b` で上書きされます (省略時は hugo.toml の値)。 |
+
+- **パスワードは設定ファイルに書きません。** 各ユーザーが初回公開時に入力し、
+  希望すれば各自の PC に暗号化保存されます (Windows のユーザー単位の暗号化 API を使用)。
+- 公開時の動作: 下書きを除いた本番ビルド (`hugo --minify`) → `remoteDir` へ全ファイルをアップロード。
+  既存ファイルは上書きされますが、**サーバ側にしか無いファイルは削除されません**。
+  記事を削除した場合は、サーバ側の該当ファイルを手動で削除してください。
+- ビルドは一時フォルダで行われ、サイトフォルダ内の `public/` は使いません。
 
 ## Hugo について
 

@@ -50,6 +50,24 @@ export interface ArticleSummary {
 
 export type FrontMatter = Record<string, unknown>;
 
+export interface DeployState {
+  configured: boolean;
+  protocol?: 'ftp' | 'ftps';
+  host?: string;
+  port?: number;
+  user?: string;
+  remoteDir?: string;
+  passwordSaved?: boolean;
+  canSavePassword?: boolean;
+}
+
+export interface DeployProgress {
+  phase: 'build' | 'connect' | 'upload';
+  file?: string;
+  bytes?: number;
+  total?: number;
+}
+
 export interface GitInfo {
   gitInstalled: boolean;
   isRepo: boolean;
@@ -100,6 +118,12 @@ export interface WpgenApi {
   };
   app: {
     info(): Promise<Res & { version: string }>;
+  };
+  deploy: {
+    state(): Promise<Res & DeployState>;
+    run(password: string, save: boolean): Promise<Res & { files?: number; seconds?: number }>;
+    clearPassword(): Promise<Res>;
+    onProgress(cb: (info: DeployProgress) => void): () => void;
   };
   preview: {
     start(): Promise<Res & { url?: string }>;

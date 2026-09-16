@@ -423,6 +423,61 @@ select {
   background: #fff;
 }
 
+/* ---------- 公開ダイアログ ---------- */
+.btn.publish {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+}
+
+.btn.publish:hover {
+  background: #15803d;
+}
+
+.deploy-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.deploy-summary .fm-label {
+  display: inline-block;
+  width: 110px;
+}
+
+.progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 40%;
+  border-radius: 3px;
+  background: var(--accent);
+  animation: indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes indeterminate {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+
+.deploy-done {
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  color: #166534;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
 /* ---------- モーダル ---------- */
 .modal-backdrop {
   position: fixed;

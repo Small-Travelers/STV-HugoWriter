@@ -29,6 +29,16 @@ contextBridge.exposeInMainWorld('wpgen', {
   app: {
     info: invoke('app:info'),
   },
+  deploy: {
+    state: invoke('deploy:state'),
+    run: invoke('deploy:run'),
+    clearPassword: invoke('deploy:clearPassword'),
+    onProgress: (cb) => {
+      const listener = (_e, info) => cb(info);
+      ipcRenderer.on('deploy-progress', listener);
+      return () => ipcRenderer.removeListener('deploy-progress', listener);
+    },
+  },
   preview: {
     start: invoke('preview:start'),
     stop: invoke('preview:stop'),

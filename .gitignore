@@ -5,4 +5,6 @@ resources/bin/
 sample-site/public/
 sample-site/resources/
 .hugo_build.lock
+# ユーザーのお試し記事 (個人写真入り) はリポジトリに含めない
+sample-site/content/posts/2026-09-16-nekopu.md
 *.log

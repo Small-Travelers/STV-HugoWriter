@@ -229,6 +229,17 @@ select {
   padding: 0 5px;
 }
 
+.badge.subdir {
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 4px;
+  padding: 0 5px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .icon-btn {
   border: none;
   background: none;

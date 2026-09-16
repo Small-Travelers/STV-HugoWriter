@@ -6,6 +6,26 @@ const fs = require('node:fs');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const matter = require('gray-matter');
+const TOML = require('@iarna/toml');
+
+// Hugo の TOML front matter (+++) 用の gray-matter オプション
+const TOML_MATTER_OPTIONS = {
+  language: 'toml',
+  delimiters: '+++',
+  engines: { toml: { parse: TOML.parse.bind(TOML), stringify: TOML.stringify.bind(TOML) } },
+};
+
+function isTomlFrontMatter(raw) {
+  return /^﻿?\+\+\+/.test(raw);
+}
+
+function parseFrontMatter(raw) {
+  const clean = raw.replace(/^﻿/, '');
+  if (isTomlFrontMatter(clean)) {
+    return { parsed: matter(clean, TOML_MATTER_OPTIONS), format: 'toml' };
+  }
+  return { parsed: matter(clean), format: 'yaml' };
+}
 
 const SITE_CONFIG_FILENAME = 'wpgen.site.json';
 
@@ -177,31 +197,75 @@ function walkMarkdown(dir, out) {
   }
 }
 
+/** 一覧に表示するセクション。設定 (wpgen.site.json) のものに加え、
+ *  content/ 直下で記事が見つかったフォルダも自動で含める。 */
+function effectiveSections() {
+  const contentDir = path.join(site.hugoRoot, 'content');
+  const sections = site.config.sections.map((s) => ({
+    dir: String(s.dir).replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+    label: s.label || s.dir,
+  }));
+  const known = new Set(sections.map((s) => s.dir));
+  if (fs.existsSync(contentDir)) {
+    const names = [];
+    for (const ent of fs.readdirSync(contentDir, { withFileTypes: true })) {
+      if (ent.isDirectory() && !ent.name.startsWith('.') && !known.has(ent.name)) {
+        names.push(ent.name);
+      }
+    }
+    names.sort((a, b) => a.localeCompare(b, 'ja'));
+    for (const name of names) {
+      sections.push({ dir: name, label: name, auto: true });
+    }
+  }
+  return sections;
+}
+
 function listArticles() {
   assertSiteOpen();
   const contentDir = path.join(site.hugoRoot, 'content');
   const result = [];
-  for (const section of site.config.sections) {
-    const dir = path.join(contentDir, section.dir);
+  const seen = new Set();
+
+  const pushArticle = (file, section) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    let fm = {};
+    try {
+      fm = parseFrontMatter(fs.readFileSync(file, 'utf8')).parsed.data || {};
+    } catch {
+      // front matter が壊れていても一覧には出す
+    }
+    const rel = path.relative(contentDir, file).split(path.sep).join('/');
+    // 記事のセクション内での位置 (サブフォルダ) を表示用に付与する
+    const inSection = section.dir && rel.startsWith(section.dir + '/') ? rel.slice(section.dir.length + 1) : rel;
+    const subDir = inSection.includes('/') ? inSection.slice(0, inSection.lastIndexOf('/')) : '';
+    result.push({
+      path: rel,
+      section: section.dir,
+      sectionLabel: section.label,
+      subDir,
+      title: fm.title || path.basename(file, path.extname(file)),
+      date: fm.date ? String(fm.date instanceof Date ? fm.date.toISOString() : fm.date) : '',
+      draft: !!fm.draft,
+    });
+  };
+
+  for (const section of effectiveSections()) {
     const files = [];
-    walkMarkdown(dir, files);
-    for (const file of files) {
-      let fm = {};
-      try {
-        fm = matter(fs.readFileSync(file, 'utf8')).data || {};
-      } catch {
-        // front matter が壊れていても一覧には出す
+    walkMarkdown(path.join(contentDir, ...section.dir.split('/')), files);
+    for (const file of files) pushArticle(file, section);
+  }
+
+  // content 直下に置かれた単独ページ (about.md など) も表示する
+  if (fs.existsSync(contentDir)) {
+    for (const ent of fs.readdirSync(contentDir, { withFileTypes: true })) {
+      if (ent.isFile() && /\.(md|markdown)$/i.test(ent.name) && ent.name !== '_index.md') {
+        pushArticle(path.join(contentDir, ent.name), { dir: '', label: 'その他のページ' });
       }
-      result.push({
-        path: path.relative(contentDir, file).split(path.sep).join('/'),
-        section: section.dir,
-        sectionLabel: section.label,
-        title: fm.title || path.basename(file, path.extname(file)),
-        date: fm.date ? String(fm.date instanceof Date ? fm.date.toISOString() : fm.date) : '',
-        draft: !!fm.draft,
-      });
     }
   }
+
   result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   return result;
 }
@@ -209,7 +273,7 @@ function listArticles() {
 function readArticle(relPath) {
   const abs = articleAbsPath(relPath);
   const raw = fs.readFileSync(abs, 'utf8');
-  const parsed = matter(raw);
+  const { parsed } = parseFrontMatter(raw);
   const fm = {};
   for (const [k, v] of Object.entries(parsed.data || {})) {
     fm[k] = v instanceof Date ? v.toISOString() : v;
@@ -219,7 +283,17 @@ function readArticle(relPath) {
 
 function saveArticle(relPath, frontMatter, body) {
   const abs = articleAbsPath(relPath);
-  const raw = matter.stringify('\n' + body.replace(/^\n+/, ''), frontMatter);
+  // 既存ファイルが TOML front matter (+++) なら形式を維持して保存する
+  let useToml = false;
+  try {
+    useToml = fs.existsSync(abs) && isTomlFrontMatter(fs.readFileSync(abs, 'utf8'));
+  } catch {
+    // 判定できなければ YAML で保存
+  }
+  const content = '\n' + body.replace(/^\n+/, '');
+  const raw = useToml
+    ? matter.stringify(content, frontMatter, TOML_MATTER_OPTIONS)
+    : matter.stringify(content, frontMatter);
   fs.writeFileSync(abs, raw, 'utf8');
   return { ok: true };
 }
@@ -238,7 +312,8 @@ function slugify(title) {
 
 function createArticle(sectionDir, title) {
   assertSiteOpen();
-  const section = site.config.sections.find((s) => s.dir === sectionDir);
+  const normalized = String(sectionDir || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const section = effectiveSections().find((s) => s.dir === normalized);
   if (!section) throw new Error('不明なセクションです: ' + sectionDir);
 
   const now = new Date();
@@ -247,7 +322,7 @@ function createArticle(sectionDir, title) {
   const pattern = site.config.newArticle.filenamePattern || '{date}-{slug}.md';
   let base = pattern.replace('{date}', ymd).replace('{slug}', slugify(title));
 
-  const dir = path.join(site.hugoRoot, 'content', section.dir);
+  const dir = path.join(site.hugoRoot, 'content', ...(section.dir ? section.dir.split('/') : []));
   fs.mkdirSync(dir, { recursive: true });
 
   let file = path.join(dir, base);

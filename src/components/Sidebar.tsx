@@ -62,6 +62,7 @@ export default function Sidebar({ articles, sections, selectedPath, onSelect, on
                     <span className="article-title">{a.title}</span>
                     <span className="article-meta">
                       {fmtDate(a.date)}
+                      {a.subDir && <span className="badge subdir" title={a.subDir}>{a.subDir}</span>}
                       {a.draft && <span className="badge draft">下書き</span>}
                     </span>
                   </div>

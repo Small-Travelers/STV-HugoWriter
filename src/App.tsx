@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, ArticleSummary, GitInfo, SiteConfig, UserSettings } from './types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, ArticleSummary, GitInfo, SectionDef, SiteConfig, UserSettings } from './types';
 import Sidebar from './components/Sidebar';
 import EditorPane from './components/EditorPane';
 import SettingsDialog from './components/SettingsDialog';
@@ -200,6 +200,19 @@ export default function App() {
     refreshGit();
   }, [refreshArticles, refreshGit]);
 
+  // 設定のセクションに加え、実際に記事が見つかったフォルダ (自動検出分) も表示する
+  const sectionList = useMemo<SectionDef[]>(() => {
+    const list: SectionDef[] = (siteConfig?.sections ?? []).map((s) => ({ ...s }));
+    const have = new Set(list.map((s) => s.dir));
+    for (const a of articles) {
+      if (!have.has(a.section)) {
+        have.add(a.section);
+        list.push({ dir: a.section, label: a.sectionLabel || a.section || 'その他のページ' });
+      }
+    }
+    return list;
+  }, [siteConfig, articles]);
+
   if (screen === 'loading') {
     return <div className="center-screen">読み込み中…</div>;
   }
@@ -285,7 +298,7 @@ export default function App() {
       <div className="main-area">
         <Sidebar
           articles={articles}
-          sections={siteConfig?.sections ?? []}
+          sections={sectionList}
           selectedPath={selectedPath}
           onSelect={setSelectedPath}
           onNew={() => setShowNewDialog(true)}
@@ -348,7 +361,7 @@ export default function App() {
 
       {showNewDialog && siteConfig && (
         <NewArticleDialog
-          sections={siteConfig.sections}
+          sections={sectionList}
           onCreate={handleCreate}
           onCancel={() => setShowNewDialog(false)}
         />

@@ -39,6 +39,8 @@ export interface ArticleSummary {
   path: string;
   section: string;
   sectionLabel: string;
+  /** セクション内でのサブフォルダ (例: "2026/09")。直下なら空文字 */
+  subDir: string;
   title: string;
   date: string;
   draft: boolean;

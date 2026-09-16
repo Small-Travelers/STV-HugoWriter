@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('wpgen', {
   site: {
     selectFolder: invoke('site:selectFolder'),
     open: invoke('site:open'),
-    getConfig: invoke('site:getConfig'),
+    close: invoke('site:close'),
   },
   articles: {
     list: invoke('articles:list'),
@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('wpgen', {
     save: invoke('articles:save'),
     create: invoke('articles:create'),
     delete: invoke('articles:delete'),
+    addImage: invoke('articles:addImage'),
   },
   git: {
     info: invoke('git:info'),

@@ -2,6 +2,8 @@
 
 export interface UserSettings {
   sitePath: string;
+  openTabs: string[];
+  activeTab: string;
   authorName: string;
   authorEmail: string;
   editorFontSize: number;
@@ -62,6 +64,7 @@ export interface DeployState {
 }
 
 export interface DeployProgress {
+  siteId?: string;
   phase: 'build' | 'connect' | 'upload';
   file?: string;
   bytes?: number;
@@ -101,35 +104,42 @@ export interface WpgenApi {
   site: {
     selectFolder(): Promise<Res & { path: string | null }>;
     open(root: string): Promise<Res & { root?: string; hugoRoot?: string; config?: SiteConfig }>;
-    getConfig(): Promise<Res & { root: string; hugoRoot: string; config: SiteConfig }>;
+    close(root: string): Promise<Res>;
   };
   articles: {
-    list(): Promise<Res & { articles: ArticleSummary[]; sections: SectionDef[] }>;
-    read(path: string): Promise<Res & { frontMatter: FrontMatter; body: string }>;
-    save(path: string, fm: FrontMatter, body: string): Promise<Res>;
-    create(section: string, title: string): Promise<Res & { path: string }>;
-    delete(path: string): Promise<Res>;
+    list(siteId: string): Promise<Res & { articles: ArticleSummary[]; sections: SectionDef[] }>;
+    read(siteId: string, path: string): Promise<Res & { frontMatter: FrontMatter; body: string }>;
+    save(siteId: string, path: string, fm: FrontMatter, body: string): Promise<Res>;
+    create(siteId: string, section: string, title: string): Promise<Res & { path: string }>;
+    delete(siteId: string, path: string): Promise<Res>;
+    /** 画像を記事に添付する。必要なら記事をページバンドルへ変換し、新しい記事パスを返す */
+    addImage(
+      siteId: string,
+      path: string,
+      fileName: string,
+      dataBase64: string
+    ): Promise<Res & { path: string; name: string; url: string }>;
   };
   git: {
-    info(): Promise<Res & { info: GitInfo }>;
-    pull(): Promise<GitResult>;
-    sync(): Promise<GitResult>;
+    info(siteId: string): Promise<Res & { info: GitInfo }>;
+    pull(siteId: string): Promise<GitResult>;
+    sync(siteId: string): Promise<GitResult>;
     clone(url: string): Promise<Res & { canceled?: boolean; root?: string }>;
   };
   app: {
     info(): Promise<Res & { version: string }>;
   };
   deploy: {
-    state(): Promise<Res & DeployState>;
-    run(password: string, save: boolean): Promise<Res & { files?: number; seconds?: number }>;
-    clearPassword(): Promise<Res>;
+    state(siteId: string): Promise<Res & DeployState>;
+    run(siteId: string, password: string, save: boolean): Promise<Res & { files?: number; seconds?: number }>;
+    clearPassword(siteId: string): Promise<Res>;
     onProgress(cb: (info: DeployProgress) => void): () => void;
   };
   preview: {
-    start(): Promise<Res & { url?: string }>;
-    stop(): Promise<Res>;
-    status(): Promise<Res & { running: boolean; url: string }>;
-    onStopped(cb: (info: { code: number | null; stderr: string }) => void): () => void;
+    start(siteId: string): Promise<Res & { url?: string }>;
+    stop(siteId: string): Promise<Res>;
+    status(siteId: string): Promise<Res & { running: boolean; url: string }>;
+    onStopped(cb: (info: { siteId: string; code: number | null; stderr: string }) => void): () => void;
   };
 }
 

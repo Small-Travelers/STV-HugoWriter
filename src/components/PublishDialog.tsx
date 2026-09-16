@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { api, DeployProgress, DeployState } from '../types';
 
 interface Props {
+  root: string;
   onClose: () => void;
 }
 
 type Phase = 'form' | 'running' | 'done' | 'error';
 
-export default function PublishDialog({ onClose }: Props) {
+export default function PublishDialog({ root, onClose }: Props) {
   const [state, setState] = useState<DeployState | null>(null);
   const [password, setPassword] = useState('');
   const [savePw, setSavePw] = useState(true);
@@ -17,21 +18,23 @@ export default function PublishDialog({ onClose }: Props) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api.deploy.state().then((r) => {
+    api.deploy.state(root).then((r) => {
       if (r.ok) setState(r);
     });
-  }, []);
+  }, [root]);
 
   useEffect(() => {
-    const off = api.deploy.onProgress(setProgress);
+    const off = api.deploy.onProgress((info) => {
+      if (!info.siteId || info.siteId === root) setProgress(info);
+    });
     return off;
-  }, []);
+  }, [root]);
 
   const run = async () => {
     setPhase('running');
     setError('');
     setProgress(null);
-    const r = await api.deploy.run(password, savePw && !!password);
+    const r = await api.deploy.run(root, password, savePw && !!password);
     if (r.ok) {
       setResult(`公開が完了しました (${r.files ?? '?'} ファイル / ${r.seconds ?? '?'} 秒)`);
       setPhase('done');
@@ -42,8 +45,8 @@ export default function PublishDialog({ onClose }: Props) {
   };
 
   const forgetPassword = async () => {
-    await api.deploy.clearPassword();
-    const r = await api.deploy.state();
+    await api.deploy.clearPassword(root);
+    const r = await api.deploy.state(root);
     if (r.ok) setState(r);
   };
 

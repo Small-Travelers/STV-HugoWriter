@@ -1,9 +1,12 @@
 // STV-HugoWriter - Electron メインプロセス
 // サイト(Hugoプロジェクト)の読み書き・Hugoプレビューサーバの管理・設定管理を担当する。
-const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
+// [実験的] 複数サイトをタブで同時に開けるよう、サイト状態を siteId (=選択フォルダのパス) で管理する。
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, protocol, net: enet } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
+const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 const { spawn, spawnSync } = require('node:child_process');
 const matter = require('gray-matter');
 const TOML = require('@iarna/toml');
@@ -29,14 +32,65 @@ function parseFrontMatter(raw) {
 
 const SITE_CONFIG_FILENAME = 'wpgen.site.json';
 
+// エディタ内で記事フォルダ (ページバンドル) 内の画像を表示するための独自スキーム。
+// 保存される Markdown には相対パスだけが書き込まれ、この URL は表示時にのみ使う。
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'wpgen-asset', privileges: { standard: true, supportFetchAPI: true, stream: true } },
+]);
+
+/** encodeURIComponent が素通しする括弧も Markdown を壊さないようにエスケープする */
+function encodeAssetParam(v) {
+  return encodeURIComponent(v).replace(/\(/g, '%28').replace(/\)/g, '%29');
+}
+
+function toAssetUrl(absPath, relName) {
+  return `wpgen-asset://img/?p=${encodeAssetParam(absPath)}&n=${encodeAssetParam(relName)}`;
+}
+
+/** 記事本文の相対画像参照を、エディタで表示できる wpgen-asset URL に変換する (読み込み時) */
+function decorateBody(bundleDir, body) {
+  return body.replace(/(!\[[^\]]*\]\()\s*([^)\s]+?)\s*(\))/g, (m, pre, src, post) => {
+    if (/^(https?:|data:|wpgen-asset:|\/\/|\/|#)/i.test(src)) return m;
+    let abs;
+    try {
+      abs = path.resolve(bundleDir, decodeURIComponent(src));
+    } catch {
+      return m;
+    }
+    if (!fs.existsSync(abs)) return m;
+    return pre + toAssetUrl(abs, src) + post;
+  });
+}
+
+/** wpgen-asset URL を相対参照へ戻す (保存時) */
+function undecorateBody(body) {
+  return body.replace(/wpgen-asset:\/\/img\/\?[^)\s"'<>]*/g, (u) => {
+    try {
+      const parsed = new URL(u);
+      const n = parsed.searchParams.get('n');
+      return n || u;
+    } catch {
+      return u;
+    }
+  });
+}
+
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
+
+function sendToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // ユーザー設定 (PCごと・個人の執筆環境設定)
 // ---------------------------------------------------------------------------
 const DEFAULT_USER_SETTINGS = {
-  sitePath: '',
+  sitePath: '', // 旧バージョン互換 (タブ導入後は openTabs を使用)
+  openTabs: [],
+  activeTab: '',
   authorName: '',
   authorEmail: '',
   editorFontSize: 16,
@@ -52,7 +106,13 @@ function settingsPath() {
 function loadUserSettings() {
   try {
     const raw = fs.readFileSync(settingsPath(), 'utf8').replace(/^﻿/, '');
-    return { ...DEFAULT_USER_SETTINGS, ...JSON.parse(raw) };
+    const s = { ...DEFAULT_USER_SETTINGS, ...JSON.parse(raw) };
+    // 旧バージョンの単一サイト設定をタブ形式へ引き継ぐ
+    if ((!Array.isArray(s.openTabs) || s.openTabs.length === 0) && s.sitePath) {
+      s.openTabs = [s.sitePath];
+      s.activeTab = s.sitePath;
+    }
+    return s;
   } catch {
     return { ...DEFAULT_USER_SETTINGS };
   }
@@ -60,6 +120,8 @@ function loadUserSettings() {
 
 function saveUserSettings(partial) {
   const merged = { ...loadUserSettings(), ...partial };
+  // 旧バージョンとの互換のため sitePath にはアクティブタブを入れておく
+  if (merged.activeTab) merged.sitePath = merged.activeTab;
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(merged, null, 2), 'utf8');
   return merged;
@@ -87,15 +149,19 @@ const DEFAULT_SITE_CONFIG = {
   deploy: {},
 };
 
-/** 現在開いているサイトの状態
- *  root     … ユーザーが選択したフォルダ (Git リポジトリのルートを想定)
- *  hugoRoot … hugo.toml 等がある Hugo サイト本体のフォルダ (root と同じか、その下位)
- */
-const site = {
-  root: '',
-  hugoRoot: '',
-  config: null,
-};
+/** 開いているサイトの一覧。キーは正規化した root パス (=siteId)。
+ *  値: { root, hugoRoot, config, preview: {proc, url}, deployRunning } */
+const sites = new Map();
+
+function siteKey(id) {
+  return path.normalize(String(id || '')).toLowerCase();
+}
+
+function getSite(id) {
+  const s = sites.get(siteKey(id));
+  if (!s) throw new Error('サイトが開かれていません: ' + id);
+  return s;
+}
 
 function findHugoConfig(root) {
   const names = ['hugo.toml', 'hugo.yaml', 'hugo.yml', 'hugo.json', 'config.toml', 'config.yaml', 'config.yml', 'config.json'];
@@ -167,14 +233,9 @@ function loadSiteConfig(root, hugoRoot) {
   return merged;
 }
 
-function assertSiteOpen() {
-  if (!site.root) throw new Error('サイトが開かれていません');
-}
-
 /** content/ 配下の相対パスであることを検証して絶対パスを返す(パストラバーサル防止) */
-function articleAbsPath(relPath) {
-  assertSiteOpen();
-  const contentDir = path.join(site.hugoRoot, 'content');
+function articleAbsPath(s, relPath) {
+  const contentDir = path.join(s.hugoRoot, 'content');
   const abs = path.resolve(contentDir, relPath);
   if (!abs.startsWith(contentDir + path.sep)) {
     throw new Error('不正なパスです: ' + relPath);
@@ -218,13 +279,13 @@ function dirHasMarkdown(dir, maxDepth = 6) {
 
 /** 一覧に表示するセクション。設定 (wpgen.site.json) のものに加え、
  *  content/ 直下で記事が見つかったフォルダも自動で含める。 */
-function effectiveSections() {
-  const contentDir = path.join(site.hugoRoot, 'content');
-  const sections = site.config.sections.map((s) => ({
-    dir: String(s.dir).replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
-    label: s.label || s.dir,
+function effectiveSections(s) {
+  const contentDir = path.join(s.hugoRoot, 'content');
+  const sections = s.config.sections.map((sec) => ({
+    dir: String(sec.dir).replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+    label: sec.label || sec.dir,
   }));
-  const known = new Set(sections.map((s) => s.dir));
+  const known = new Set(sections.map((sec) => sec.dir));
   if (fs.existsSync(contentDir)) {
     const names = [];
     for (const ent of fs.readdirSync(contentDir, { withFileTypes: true })) {
@@ -245,9 +306,8 @@ function effectiveSections() {
   return sections;
 }
 
-function listArticles() {
-  assertSiteOpen();
-  const contentDir = path.join(site.hugoRoot, 'content');
+function listArticles(s) {
+  const contentDir = path.join(s.hugoRoot, 'content');
   const result = [];
   const seen = new Set();
 
@@ -281,7 +341,7 @@ function listArticles() {
     });
   };
 
-  for (const section of effectiveSections()) {
+  for (const section of effectiveSections(s)) {
     const files = [];
     walkMarkdown(path.join(contentDir, ...section.dir.split('/')), files);
     for (const file of files) pushArticle(file, section);
@@ -300,19 +360,20 @@ function listArticles() {
   return result;
 }
 
-function readArticle(relPath) {
-  const abs = articleAbsPath(relPath);
+function readArticle(s, relPath) {
+  const abs = articleAbsPath(s, relPath);
   const raw = fs.readFileSync(abs, 'utf8');
   const { parsed } = parseFrontMatter(raw);
   const fm = {};
   for (const [k, v] of Object.entries(parsed.data || {})) {
     fm[k] = v instanceof Date ? v.toISOString() : v;
   }
-  return { frontMatter: fm, body: parsed.content.replace(/^\r?\n/, '') };
+  const body = decorateBody(path.dirname(abs), parsed.content.replace(/^\r?\n/, ''));
+  return { frontMatter: fm, body };
 }
 
-function saveArticle(relPath, frontMatter, body) {
-  const abs = articleAbsPath(relPath);
+function saveArticle(s, relPath, frontMatter, body) {
+  const abs = articleAbsPath(s, relPath);
   // 既存ファイルが TOML front matter (+++) なら形式を維持して保存する
   let useToml = false;
   try {
@@ -320,7 +381,7 @@ function saveArticle(relPath, frontMatter, body) {
   } catch {
     // 判定できなければ YAML で保存
   }
-  const content = '\n' + body.replace(/^\n+/, '');
+  const content = '\n' + undecorateBody(body).replace(/^\n+/, '');
   const raw = useToml
     ? matter.stringify(content, frontMatter, TOML_MATTER_OPTIONS)
     : matter.stringify(content, frontMatter);
@@ -340,19 +401,18 @@ function slugify(title) {
   return s || 'article';
 }
 
-function createArticle(sectionDir, title) {
-  assertSiteOpen();
+function createArticle(s, sectionDir, title) {
   const normalized = String(sectionDir || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  const section = effectiveSections().find((s) => s.dir === normalized);
+  const section = effectiveSections(s).find((sec) => sec.dir === normalized);
   if (!section) throw new Error('不明なセクションです: ' + sectionDir);
 
   const now = new Date();
   const date = now.toISOString();
   const ymd = date.slice(0, 10);
-  const pattern = site.config.newArticle.filenamePattern || '{date}-{slug}.md';
-  let base = pattern.replace('{date}', ymd).replace('{slug}', slugify(title));
+  const pattern = s.config.newArticle.filenamePattern || '{date}-{slug}.md';
+  const base = pattern.replace('{date}', ymd).replace('{slug}', slugify(title));
 
-  const dir = path.join(site.hugoRoot, 'content', ...(section.dir ? section.dir.split('/') : []));
+  const dir = path.join(s.hugoRoot, 'content', ...(section.dir ? section.dir.split('/') : []));
   fs.mkdirSync(dir, { recursive: true });
 
   let file = path.join(dir, base);
@@ -366,28 +426,85 @@ function createArticle(sectionDir, title) {
   const fm = {
     title: String(title || '無題'),
     date,
-    ...((site.config.newArticle && site.config.newArticle.defaultFrontMatter) || { draft: true }),
+    ...((s.config.newArticle && s.config.newArticle.defaultFrontMatter) || { draft: true }),
   };
   if (userSettings.authorName) fm.author = userSettings.authorName;
 
   fs.writeFileSync(file, matter.stringify('\n', fm), 'utf8');
-  const contentDir = path.join(site.hugoRoot, 'content');
+  const contentDir = path.join(s.hugoRoot, 'content');
   return { path: path.relative(contentDir, file).split(path.sep).join('/') };
 }
 
-function deleteArticle(relPath) {
-  const abs = articleAbsPath(relPath);
-  return shell.trashItem(abs).then(() => ({ ok: true }));
+function deleteArticle(s, relPath) {
+  const abs = articleAbsPath(s, relPath);
+  const contentDir = path.join(s.hugoRoot, 'content');
+  // ページバンドル (記事名/index.md) は画像ごとフォルダをまとめて削除する
+  const isLeafBundle =
+    path.basename(abs).toLowerCase() === 'index.md' &&
+    path.resolve(path.dirname(abs)) !== path.resolve(contentDir);
+  const target = isLeafBundle ? path.dirname(abs) : abs;
+  return shell.trashItem(target).then(() => ({ ok: true }));
 }
 
 // ---------------------------------------------------------------------------
-// Hugo プレビューサーバ
+// 画像の添付 (ページバンドル方式)
 // ---------------------------------------------------------------------------
-const preview = {
-  proc: null,
-  url: '',
-};
+function sanitizeImageName(name) {
+  const rawExt = path.extname(name || '').toLowerCase();
+  const ext = /^\.(png|jpe?g|gif|webp|svg|avif|bmp)$/.test(rawExt) ? rawExt : '.png';
+  let base = path
+    .basename(name || '', path.extname(name || ''))
+    .replace(/[\\/:*?"<>|#%&{}$!'@+`=~^;,\s　]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!base) base = 'image-' + Date.now();
+  return { base, ext };
+}
 
+/** 記事に画像を追加する。
+ *  通常記事 (foo.md) はページバンドル (foo/index.md) へ自動変換し、
+ *  画像を同じフォルダに保存して相対参照で使えるようにする。 */
+function addImage(s, relPath, fileName, dataBase64) {
+  let abs = articleAbsPath(s, relPath);
+  if (!fs.existsSync(abs)) throw new Error('記事ファイルが見つかりません: ' + relPath);
+
+  const contentDir = path.join(s.hugoRoot, 'content');
+  let newRel = relPath;
+  const baseName = path.basename(abs).toLowerCase();
+  if (baseName !== 'index.md' && baseName !== '_index.md') {
+    // ページバンドルへ変換: foo.md → foo/index.md
+    const bundleDir = abs.replace(/\.(md|markdown)$/i, '');
+    const dst = path.join(bundleDir, 'index.md');
+    if (fs.existsSync(dst)) {
+      throw new Error('同名のフォルダ記事が既に存在するため変換できません: ' + dst);
+    }
+    fs.mkdirSync(bundleDir, { recursive: true });
+    fs.renameSync(abs, dst);
+    abs = dst;
+    newRel = path.relative(contentDir, dst).split(path.sep).join('/');
+  }
+
+  const dir = path.dirname(abs);
+  const { base, ext } = sanitizeImageName(fileName);
+  let name = base + ext;
+  let target = path.join(dir, name);
+  let i = 2;
+  while (fs.existsSync(target)) {
+    name = `${base}-${i}${ext}`;
+    target = path.join(dir, name);
+    i++;
+  }
+  const buf = Buffer.from(String(dataBase64 || ''), 'base64');
+  if (buf.length === 0) throw new Error('画像データが空です');
+  if (buf.length > 30 * 1024 * 1024) throw new Error('画像が大きすぎます (30MB まで)');
+  fs.writeFileSync(target, buf);
+
+  return { path: newRel, name, url: toAssetUrl(target, name) };
+}
+
+// ---------------------------------------------------------------------------
+// Hugo プレビューサーバ (サイトごとに1つ)
+// ---------------------------------------------------------------------------
 function findHugoBinary() {
   // 1. 同梱バイナリ (パッケージ版)
   const bundled = path.join(process.resourcesPath || '', 'bin', 'hugo.exe');
@@ -412,9 +529,8 @@ function findFreePort() {
   });
 }
 
-async function startPreview() {
-  assertSiteOpen();
-  if (preview.proc) return { url: preview.url };
+async function startPreview(s) {
+  if (s.preview.proc) return { url: s.preview.url };
 
   const hugo = findHugoBinary();
   if (!hugo) {
@@ -424,29 +540,28 @@ async function startPreview() {
   const args = [
     'server',
     '-D',
+    '--buildFuture',
     '--port', String(port),
     '--bind', '127.0.0.1',
-    '--source', site.hugoRoot,
+    '--source', s.hugoRoot,
     '--disableBrowserError',
   ];
   const proc = spawn(hugo, args, { shell: hugo === 'hugo', windowsHide: true });
-  preview.proc = proc;
-  preview.url = `http://127.0.0.1:${port}/`;
+  s.preview.proc = proc;
+  s.preview.url = `http://127.0.0.1:${port}/`;
 
   let stderrBuf = '';
   proc.stderr.on('data', (d) => { stderrBuf += d.toString(); });
   proc.on('exit', (code) => {
-    preview.proc = null;
-    preview.url = '';
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('preview-stopped', { code, stderr: stderrBuf.slice(-2000) });
-    }
+    s.preview.proc = null;
+    s.preview.url = '';
+    sendToRenderer('preview-stopped', { siteId: s.root, code, stderr: stderrBuf.slice(-2000) });
   });
 
   // サーバが応答するまで待つ (最大 15 秒)
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
-    if (!preview.proc) {
+    if (!s.preview.proc) {
       throw new Error('Hugo サーバの起動に失敗しました:\n' + stderrBuf.slice(-2000));
     }
     const ok = await new Promise((resolve) => {
@@ -454,23 +569,27 @@ async function startPreview() {
       sock.on('connect', () => { sock.destroy(); resolve(true); });
       sock.on('error', () => resolve(false));
     });
-    if (ok) return { url: preview.url };
+    if (ok) return { url: s.preview.url };
     await new Promise((r) => setTimeout(r, 300));
   }
   throw new Error('Hugo サーバの起動がタイムアウトしました');
 }
 
-function stopPreview() {
-  if (preview.proc) {
-    try { preview.proc.kill(); } catch { /* 無視 */ }
-    if (process.platform === 'win32' && preview.proc.pid) {
+function stopPreview(s) {
+  if (s.preview.proc) {
+    try { s.preview.proc.kill(); } catch { /* 無視 */ }
+    if (process.platform === 'win32' && s.preview.proc.pid) {
       // shell 経由で起動した場合は子プロセスごと終了させる
-      spawnSync('taskkill', ['/pid', String(preview.proc.pid), '/T', '/F'], { windowsHide: true });
+      spawnSync('taskkill', ['/pid', String(s.preview.proc.pid), '/T', '/F'], { windowsHide: true });
     }
-    preview.proc = null;
-    preview.url = '';
+    s.preview.proc = null;
+    s.preview.url = '';
   }
   return { ok: true };
+}
+
+function stopAllPreviews() {
+  for (const s of sites.values()) stopPreview(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -507,23 +626,19 @@ function isAuthError(text) {
 const AUTH_HELP =
   'リポジトリへの接続に失敗しました。GitHub へのサインインが済んでいるか、リポジトリへのアクセス権があるか確認してください。';
 
-/** サイトフォルダが属する Git リポジトリのルートを返す (なければ null)。
- *  サイト本体がリポジトリのサブディレクトリでも正しく検出できるよう、
- *  git rev-parse --show-toplevel に問い合わせる。 */
-async function getGitRoot() {
-  if (!site.root) return null;
-  const r = await runGit(['rev-parse', '--show-toplevel'], site.root);
+/** サイトフォルダが属する Git リポジトリのルートを返す (なければ null)。 */
+async function getGitRoot(s) {
+  const r = await runGit(['rev-parse', '--show-toplevel'], s.root);
   if (r.code !== 0) return null;
   const p = r.out.trim();
   return p ? path.normalize(p) : null;
 }
 
-async function gitInfo() {
+async function gitInfo(s) {
   const ver = await runGit(['--version']);
   if (ver.code !== 0) return { gitInstalled: false, isRepo: false };
-  if (!site.root) return { gitInstalled: true, isRepo: false };
 
-  const gitRoot = await getGitRoot();
+  const gitRoot = await getGitRoot(s);
   if (!gitRoot) {
     return { gitInstalled: true, isRepo: false };
   }
@@ -560,9 +675,8 @@ async function gitCommitAll(gitRoot) {
 }
 
 /** 最新を取得 (必要ならローカル変更を先に自動コミット) */
-async function gitPull() {
-  assertSiteOpen();
-  const gitRoot = await getGitRoot();
+async function gitPull(s) {
+  const gitRoot = await getGitRoot(s);
   if (!gitRoot) throw new Error('このサイトは Git 管理されていません。');
   await gitCommitAll(gitRoot);
   const pull = await runGit([...gitIdentityArgs(), 'pull', '--rebase'], gitRoot);
@@ -586,11 +700,10 @@ async function gitPull() {
 }
 
 /** 変更を送信 (自動コミット → 取得 → プッシュ) */
-async function gitSync() {
-  assertSiteOpen();
-  const gitRoot = await getGitRoot();
+async function gitSync(s) {
+  const gitRoot = await getGitRoot(s);
   if (!gitRoot) throw new Error('このサイトは Git 管理されていません。');
-  const pulled = await gitPull();
+  const pulled = await gitPull(s);
   if (pulled.conflict) return pulled;
   const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], gitRoot)).out.trim() || 'main';
   const push = await runGit(['push', '-u', 'origin', branch], gitRoot);
@@ -633,8 +746,8 @@ async function gitClone(url) {
 // 接続先は管理者が wpgen.site.json の deploy に定義する。
 // パスワードだけは各ユーザーの PC に暗号化して保存する (設定ファイルには書かない)。
 
-function deployConfig() {
-  const d = (site.config && site.config.deploy) || {};
+function deployConfig(s) {
+  const d = (s.config && s.config.deploy) || {};
   if (!d.host || !d.user) return null;
   return {
     protocol: d.protocol === 'ftps' ? 'ftps' : 'ftp',
@@ -689,9 +802,8 @@ function clearPassword(cfg) {
   fs.writeFileSync(secretsPath(), JSON.stringify(secrets, null, 2), 'utf8');
 }
 
-function deployState() {
-  assertSiteOpen();
-  const cfg = deployConfig();
+function deployState(s) {
+  const cfg = deployConfig(s);
   if (!cfg) return { configured: false };
   return {
     configured: true,
@@ -706,12 +818,13 @@ function deployState() {
 }
 
 /** 公開用に Hugo をビルドする (下書きは含めない)。出力先のパスを返す */
-function buildForPublish(cfg) {
+function buildForPublish(s, cfg) {
   const hugo = findHugoBinary();
   if (!hugo) throw new Error('Hugo が見つかりません');
-  const outDir = path.join(app.getPath('temp'), 'wpgen-publish');
+  const hash = crypto.createHash('md5').update(s.root).digest('hex').slice(0, 10);
+  const outDir = path.join(app.getPath('temp'), 'wpgen-publish', hash);
   const args = [
-    '--source', site.hugoRoot,
+    '--source', s.hugoRoot,
     '--destination', outDir,
     '--cleanDestinationDir',
     '--minify',
@@ -727,27 +840,20 @@ function buildForPublish(cfg) {
   return outDir;
 }
 
-let deployRunning = false;
-
-async function deployRun(passwordInput, saveFlag) {
-  assertSiteOpen();
-  if (deployRunning) throw new Error('公開処理が既に実行中です');
-  const cfg = deployConfig();
+async function deployRun(s, passwordInput, saveFlag) {
+  if (s.deployRunning) throw new Error('公開処理が既に実行中です');
+  const cfg = deployConfig(s);
   if (!cfg) throw new Error('公開先が設定されていません (wpgen.site.json の deploy)。管理者に確認してください');
 
   const password = passwordInput || getSavedPassword(cfg);
   if (!password) throw new Error('パスワードを入力してください');
 
-  deployRunning = true;
+  s.deployRunning = true;
   const started = Date.now();
-  const sendProgress = (info) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('deploy-progress', info);
-    }
-  };
+  const sendProgress = (info) => sendToRenderer('deploy-progress', { siteId: s.root, ...info });
   try {
     sendProgress({ phase: 'build' });
-    const outDir = buildForPublish(cfg);
+    const outDir = buildForPublish(s, cfg);
 
     sendProgress({ phase: 'connect' });
     const ftp = require('basic-ftp');
@@ -760,7 +866,6 @@ async function deployRun(passwordInput, saveFlag) {
         password,
         secure: cfg.protocol === 'ftps',
       });
-      let files = 0;
       client.trackProgress((info) => {
         if (info.type === 'upload') {
           sendProgress({ phase: 'upload', file: info.name, bytes: info.bytesOverall });
@@ -774,7 +879,7 @@ async function deployRun(passwordInput, saveFlag) {
         }
         return n;
       };
-      files = countFiles(outDir);
+      const files = countFiles(outDir);
       sendProgress({ phase: 'upload', total: files });
       await client.ensureDir(cfg.remoteDir);
       await client.uploadFromDir(outDir);
@@ -798,17 +903,20 @@ async function deployRun(passwordInput, saveFlag) {
     }
     throw e;
   } finally {
-    deployRunning = false;
+    s.deployRunning = false;
   }
 }
 
 // ---------------------------------------------------------------------------
-// サイトを開く
+// サイトを開く / 閉じる
 // ---------------------------------------------------------------------------
 function openSite(root) {
   if (!root || !fs.existsSync(root)) {
     return { ok: false, error: 'フォルダが見つかりません: ' + root };
   }
+
+  // 既に開いている場合は設定を読み直して返す (タブの再アクティブ化)
+  const existing = sites.get(siteKey(root));
 
   // 管理者設定 (選択フォルダ直下) の hugoDir 指定を最優先で使う
   let hugoRoot = null;
@@ -839,18 +947,38 @@ function openSite(root) {
     };
   }
 
-  stopPreview();
-  site.root = root;
-  site.hugoRoot = hugoRoot;
+  let config;
   try {
-    site.config = loadSiteConfig(root, hugoRoot);
+    config = loadSiteConfig(root, hugoRoot);
   } catch (e) {
-    site.root = '';
-    site.hugoRoot = '';
     return { ok: false, error: `サイト設定ファイル (${SITE_CONFIG_FILENAME}) の読み込みに失敗しました: ${e.message}` };
   }
-  saveUserSettings({ sitePath: root });
-  return { ok: true, root, hugoRoot, config: site.config };
+
+  if (existing) {
+    existing.hugoRoot = hugoRoot;
+    existing.config = config;
+    return { ok: true, root: existing.root, hugoRoot, config };
+  }
+
+  const entry = {
+    root,
+    hugoRoot,
+    config,
+    preview: { proc: null, url: '' },
+    deployRunning: false,
+  };
+  sites.set(siteKey(root), entry);
+  return { ok: true, root, hugoRoot, config };
+}
+
+function closeSite(root) {
+  const key = siteKey(root);
+  const s = sites.get(key);
+  if (s) {
+    stopPreview(s);
+    sites.delete(key);
+  }
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -879,38 +1007,44 @@ ipcMain.handle('site:selectFolder', wrap(async () => {
 }));
 
 ipcMain.handle('site:open', async (_e, root) => openSite(root));
-ipcMain.handle('site:getConfig', wrap(() => {
-  assertSiteOpen();
-  return { root: site.root, hugoRoot: site.hugoRoot, config: site.config };
+ipcMain.handle('site:close', wrap((root) => closeSite(root)));
+
+ipcMain.handle('articles:list', wrap((siteId) => {
+  const s = getSite(siteId);
+  return {
+    articles: listArticles(s),
+    sections: effectiveSections(s).map((sec) => ({ dir: sec.dir, label: sec.label })),
+  };
 }));
+ipcMain.handle('articles:read', wrap((siteId, relPath) => readArticle(getSite(siteId), relPath)));
+ipcMain.handle('articles:save', wrap((siteId, relPath, fm, body) => saveArticle(getSite(siteId), relPath, fm, body)));
+ipcMain.handle('articles:create', wrap((siteId, section, title) => createArticle(getSite(siteId), section, title)));
+ipcMain.handle('articles:delete', wrap((siteId, relPath) => deleteArticle(getSite(siteId), relPath)));
+ipcMain.handle('articles:addImage', wrap((siteId, relPath, fileName, dataBase64) =>
+  addImage(getSite(siteId), relPath, fileName, dataBase64)
+));
 
-ipcMain.handle('articles:list', wrap(() => ({
-  articles: listArticles(),
-  sections: effectiveSections().map((s) => ({ dir: s.dir, label: s.label })),
-})));
-ipcMain.handle('articles:read', wrap((relPath) => readArticle(relPath)));
-ipcMain.handle('articles:save', wrap((relPath, fm, body) => saveArticle(relPath, fm, body)));
-ipcMain.handle('articles:create', wrap((section, title) => createArticle(section, title)));
-ipcMain.handle('articles:delete', wrap((relPath) => deleteArticle(relPath)));
-
-ipcMain.handle('git:info', wrap(async () => ({ info: await gitInfo() })));
-ipcMain.handle('git:pull', wrap(() => gitPull()));
-ipcMain.handle('git:sync', wrap(() => gitSync()));
+ipcMain.handle('git:info', wrap(async (siteId) => ({ info: await gitInfo(getSite(siteId)) })));
+ipcMain.handle('git:pull', wrap((siteId) => gitPull(getSite(siteId))));
+ipcMain.handle('git:sync', wrap((siteId) => gitSync(getSite(siteId))));
 ipcMain.handle('git:clone', wrap((url) => gitClone(url)));
 
 ipcMain.handle('app:info', wrap(() => ({ version: app.getVersion() })));
 
-ipcMain.handle('deploy:state', wrap(() => deployState()));
-ipcMain.handle('deploy:run', wrap((password, save) => deployRun(password, save)));
-ipcMain.handle('deploy:clearPassword', wrap(() => {
-  const cfg = deployConfig();
+ipcMain.handle('deploy:state', wrap((siteId) => deployState(getSite(siteId))));
+ipcMain.handle('deploy:run', wrap((siteId, password, save) => deployRun(getSite(siteId), password, save)));
+ipcMain.handle('deploy:clearPassword', wrap((siteId) => {
+  const cfg = deployConfig(getSite(siteId));
   if (cfg) clearPassword(cfg);
   return { ok: true };
 }));
 
-ipcMain.handle('preview:start', wrap(() => startPreview()));
-ipcMain.handle('preview:stop', wrap(() => stopPreview()));
-ipcMain.handle('preview:status', wrap(() => ({ running: !!preview.proc, url: preview.url })));
+ipcMain.handle('preview:start', wrap((siteId) => startPreview(getSite(siteId))));
+ipcMain.handle('preview:stop', wrap((siteId) => stopPreview(getSite(siteId))));
+ipcMain.handle('preview:status', wrap((siteId) => {
+  const s = getSite(siteId);
+  return { running: !!s.preview.proc, url: s.preview.url };
+}));
 
 // ---------------------------------------------------------------------------
 // ウィンドウ
@@ -974,13 +1108,30 @@ function migrateLegacyUserData() {
 }
 
 app.whenReady().then(() => {
+  // エディタ内の画像表示用スキーム。開いているサイトの Hugo フォルダ内のファイルのみ返す
+  protocol.handle('wpgen-asset', (request) => {
+    try {
+      const u = new URL(request.url);
+      const p = u.searchParams.get('p');
+      if (!p) return new Response('bad request', { status: 400 });
+      const abs = path.normalize(p);
+      const allowed = [...sites.values()].some((s) =>
+        abs.toLowerCase().startsWith((s.hugoRoot + path.sep).toLowerCase())
+      );
+      if (!allowed || !fs.existsSync(abs)) return new Response('not found', { status: 404 });
+      return enet.fetch(pathToFileURL(abs).toString());
+    } catch {
+      return new Response('error', { status: 500 });
+    }
+  });
+
   migrateLegacyUserData();
   createWindow();
 });
 
 app.on('window-all-closed', () => {
-  stopPreview();
+  stopAllPreviews();
   app.quit();
 });
 
-app.on('before-quit', () => stopPreview());
+app.on('before-quit', () => stopAllPreviews());

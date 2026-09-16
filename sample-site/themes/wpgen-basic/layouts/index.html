@@ -1,0 +1,15 @@
+{{ define "main" }}
+<h1>最新の記事</h1>
+<ul class="post-list">
+  {{ range first 20 (where site.RegularPages "Section" "in" (slice "posts" "news")).ByDate.Reverse }}
+  <li>
+    <a href="{{ .RelPermalink }}">{{ .Title }}</a>
+    <div class="post-meta">
+      {{ with .Date }}<time>{{ .Format "2006年1月2日" }}</time>{{ end }}
+      {{ if .Draft }}<span class="draft-badge">下書き</span>{{ end }}
+    </div>
+    {{ with .Params.description }}<p class="desc">{{ . }}</p>{{ end }}
+  </li>
+  {{ end }}
+</ul>
+{{ end }}

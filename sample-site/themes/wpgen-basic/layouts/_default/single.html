@@ -1,0 +1,18 @@
+{{ define "main" }}
+<article class="post">
+  <h1>{{ .Title }}</h1>
+  <div class="post-meta">
+    {{ with .Date }}<time>{{ .Format "2006年1月2日" }}</time>{{ end }}
+    {{ with .Params.author }}<span class="author">{{ . }}</span>{{ end }}
+    {{ if .Draft }}<span class="draft-badge">下書き</span>{{ end }}
+  </div>
+  {{ with .Params.tags }}
+  <div class="tags">
+    {{ range . }}<span class="tag">{{ . }}</span>{{ end }}
+  </div>
+  {{ end }}
+  <div class="post-content">
+    {{ .Content }}
+  </div>
+</article>
+{{ end }}

@@ -1,0 +1,8 @@
+baseURL = 'https://example.org/'
+languageCode = 'ja'
+title = 'サンプルサイト'
+theme = 'wpgen-basic'
+hasCJKLanguage = true
+
+[pagination]
+pagerSize = 10

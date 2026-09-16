@@ -1,0 +1,4 @@
+name = "wpgen-basic"
+license = "MIT"
+description = "HugoWriter 用のシンプルなテーマ"
+min_version = "0.100.0"

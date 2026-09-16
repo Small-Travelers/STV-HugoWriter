@@ -1,0 +1,19 @@
+{
+  "siteName": "サンプルサイト",
+  "sections": [
+    { "dir": "posts", "label": "投稿" },
+    { "dir": "news", "label": "お知らせ" }
+  ],
+  "frontMatterFields": [
+    { "key": "title", "label": "タイトル", "type": "string", "required": true },
+    { "key": "date", "label": "日付", "type": "date" },
+    { "key": "draft", "label": "下書き", "type": "boolean" },
+    { "key": "tags", "label": "タグ", "type": "list" },
+    { "key": "description", "label": "説明", "type": "text" }
+  ],
+  "newArticle": {
+    "filenamePattern": "{date}-{slug}.md",
+    "defaultFrontMatter": { "draft": true }
+  },
+  "deploy": {}
+}

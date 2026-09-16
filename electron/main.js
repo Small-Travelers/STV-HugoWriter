@@ -191,10 +191,29 @@ function walkMarkdown(dir, out) {
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
       walkMarkdown(full, out);
-    } else if (/\.(md|markdown)$/i.test(ent.name) && ent.name !== '_index.md') {
+    } else if (/\.(md|markdown)$/i.test(ent.name)) {
       out.push(full);
     }
   }
+}
+
+/** ディレクトリ配下に Markdown ファイルがあるか (_index.md も数える) */
+function dirHasMarkdown(dir, maxDepth = 6) {
+  const stack = [{ dir, depth: 0 }];
+  while (stack.length > 0) {
+    const { dir: d, depth } = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (ent.isFile() && /\.(md|markdown)$/i.test(ent.name)) return true;
+      if (ent.isDirectory() && depth < maxDepth) stack.push({ dir: path.join(d, ent.name), depth: depth + 1 });
+    }
+  }
+  return false;
 }
 
 /** 一覧に表示するセクション。設定 (wpgen.site.json) のものに加え、
@@ -209,7 +228,12 @@ function effectiveSections() {
   if (fs.existsSync(contentDir)) {
     const names = [];
     for (const ent of fs.readdirSync(contentDir, { withFileTypes: true })) {
-      if (ent.isDirectory() && !ent.name.startsWith('.') && !known.has(ent.name)) {
+      if (
+        ent.isDirectory() &&
+        !ent.name.startsWith('.') &&
+        !known.has(ent.name) &&
+        dirHasMarkdown(path.join(contentDir, ent.name))
+      ) {
         names.push(ent.name);
       }
     }
@@ -240,12 +264,18 @@ function listArticles() {
     // 記事のセクション内での位置 (サブフォルダ) を表示用に付与する
     const inSection = section.dir && rel.startsWith(section.dir + '/') ? rel.slice(section.dir.length + 1) : rel;
     const subDir = inSection.includes('/') ? inSection.slice(0, inSection.lastIndexOf('/')) : '';
+    // _index.md はセクション (やサイトトップ) の見出しページとして扱う
+    const isIndex = path.basename(file).toLowerCase() === '_index.md';
+    const fallbackTitle = isIndex
+      ? subDir || (section.dir ? section.label : 'トップページ')
+      : path.basename(file, path.extname(file));
     result.push({
       path: rel,
       section: section.dir,
       sectionLabel: section.label,
       subDir,
-      title: fm.title || path.basename(file, path.extname(file)),
+      isIndex,
+      title: fm.title || fallbackTitle,
       date: fm.date ? String(fm.date instanceof Date ? fm.date.toISOString() : fm.date) : '',
       draft: !!fm.draft,
     });
@@ -257,10 +287,10 @@ function listArticles() {
     for (const file of files) pushArticle(file, section);
   }
 
-  // content 直下に置かれた単独ページ (about.md など) も表示する
+  // content 直下に置かれた単独ページ (about.md やトップページの _index.md) も表示する
   if (fs.existsSync(contentDir)) {
     for (const ent of fs.readdirSync(contentDir, { withFileTypes: true })) {
-      if (ent.isFile() && /\.(md|markdown)$/i.test(ent.name) && ent.name !== '_index.md') {
+      if (ent.isFile() && /\.(md|markdown)$/i.test(ent.name)) {
         pushArticle(path.join(contentDir, ent.name), { dir: '', label: 'その他のページ' });
       }
     }
@@ -669,7 +699,10 @@ ipcMain.handle('site:getConfig', wrap(() => {
   return { root: site.root, hugoRoot: site.hugoRoot, config: site.config };
 }));
 
-ipcMain.handle('articles:list', wrap(() => ({ articles: listArticles() })));
+ipcMain.handle('articles:list', wrap(() => ({
+  articles: listArticles(),
+  sections: effectiveSections().map((s) => ({ dir: s.dir, label: s.label })),
+})));
 ipcMain.handle('articles:read', wrap((relPath) => readArticle(relPath)));
 ipcMain.handle('articles:save', wrap((relPath, fm, body) => saveArticle(relPath, fm, body)));
 ipcMain.handle('articles:create', wrap((section, title) => createArticle(section, title)));

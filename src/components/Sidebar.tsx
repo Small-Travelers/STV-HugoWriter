@@ -10,8 +10,29 @@ interface Props {
   onDelete: (path: string) => void;
 }
 
+const COLLAPSE_KEY = 'wpgen.collapsedSections';
+
+function loadCollapsed(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
 export default function Sidebar({ articles, sections, selectedPath, onSelect, onNew, onDelete }: Props) {
   const [query, setQuery] = useState('');
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(loadCollapsed);
+
+  const toggleSection = (dir: string) => {
+    const next = { ...collapsed, [dir]: !collapsed[dir] };
+    setCollapsed(next);
+    try {
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
+    } catch {
+      // 保存できなくても動作には影響しない
+    }
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -45,14 +66,21 @@ export default function Sidebar({ articles, sections, selectedPath, onSelect, on
       </div>
       <div className="article-list">
         {sections.map((s) => {
-          const list = bySection.get(s.dir) ?? [];
+          const raw = bySection.get(s.dir) ?? [];
+          // セクションの見出しページ (_index.md) は先頭に表示する
+          const list = [...raw.filter((a) => a.isIndex), ...raw.filter((a) => !a.isIndex)];
+          // 検索中は折りたたみを無視してヒットした記事を必ず見せる
+          const isCollapsed = !query.trim() && !!collapsed[s.dir || '(root)'];
           return (
             <div key={s.dir} className="section-group">
-              <div className="section-label">
+              <button className="section-label" onClick={() => toggleSection(s.dir || '(root)')}>
+                <span className={'caret ' + (isCollapsed ? 'closed' : '')}>▾</span>
                 {s.label} <span className="count">{list.length}</span>
-              </div>
-              {list.length === 0 && <div className="empty">記事がありません</div>}
-              {list.map((a) => (
+              </button>
+              {isCollapsed ? null : (
+                <>
+                  {list.length === 0 && <div className="empty">記事がありません</div>}
+                  {list.map((a) => (
                 <div
                   key={a.path}
                   className={'article-item ' + (a.path === selectedPath ? 'selected' : '')}
@@ -62,6 +90,7 @@ export default function Sidebar({ articles, sections, selectedPath, onSelect, on
                     <span className="article-title">{a.title}</span>
                     <span className="article-meta">
                       {fmtDate(a.date)}
+                      {a.isIndex && <span className="badge index">見出しページ</span>}
                       {a.subDir && <span className="badge subdir" title={a.subDir}>{a.subDir}</span>}
                       {a.draft && <span className="badge draft">下書き</span>}
                     </span>
@@ -78,6 +107,8 @@ export default function Sidebar({ articles, sections, selectedPath, onSelect, on
                   </button>
                 </div>
               ))}
+                </>
+              )}
             </div>
           );
         })}

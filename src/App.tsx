@@ -15,6 +15,7 @@ export default function App() {
   const [siteRoot, setSiteRoot] = useState('');
   const [hugoRoot, setHugoRoot] = useState('');
   const [articles, setArticles] = useState<ArticleSummary[]>([]);
+  const [listSections, setListSections] = useState<SectionDef[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -37,7 +38,10 @@ export default function App() {
 
   const refreshArticles = useCallback(async () => {
     const r = await api.articles.list();
-    if (r.ok) setArticles(r.articles);
+    if (r.ok) {
+      setArticles(r.articles);
+      setListSections(r.sections ?? []);
+    }
   }, []);
 
   const refreshGit = useCallback(async () => {
@@ -63,6 +67,7 @@ export default function App() {
       const list = await api.articles.list();
       if (list.ok) {
         setArticles(list.articles);
+        setListSections(list.sections ?? []);
         // 開発用: ?autoselect=1 付きで起動したときは先頭の記事を開く
         const params = new URLSearchParams(window.location.search);
         if (params.has('autoselect') && list.articles.length > 0) {
@@ -200,9 +205,11 @@ export default function App() {
     refreshGit();
   }, [refreshArticles, refreshGit]);
 
-  // 設定のセクションに加え、実際に記事が見つかったフォルダ (自動検出分) も表示する
+  // メインプロセスが返すセクション一覧 (設定+自動検出、記事0件のフォルダも含む) を使い、
+  // 念のため記事側にしか現れないもの (content 直下ページなど) も補う
   const sectionList = useMemo<SectionDef[]>(() => {
-    const list: SectionDef[] = (siteConfig?.sections ?? []).map((s) => ({ ...s }));
+    const base = listSections.length > 0 ? listSections : siteConfig?.sections ?? [];
+    const list: SectionDef[] = base.map((s) => ({ ...s }));
     const have = new Set(list.map((s) => s.dir));
     for (const a of articles) {
       if (!have.has(a.section)) {
@@ -211,7 +218,7 @@ export default function App() {
       }
     }
     return list;
-  }, [siteConfig, articles]);
+  }, [listSections, siteConfig, articles]);
 
   if (screen === 'loading') {
     return <div className="center-screen">読み込み中…</div>;

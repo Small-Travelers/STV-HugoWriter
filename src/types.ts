@@ -41,6 +41,8 @@ export interface ArticleSummary {
   sectionLabel: string;
   /** セクション内でのサブフォルダ (例: "2026/09")。直下なら空文字 */
   subDir: string;
+  /** _index.md (セクションやトップの見出しページ) かどうか */
+  isIndex: boolean;
   title: string;
   date: string;
   draft: boolean;
@@ -82,7 +84,7 @@ export interface WpgenApi {
     getConfig(): Promise<Res & { root: string; hugoRoot: string; config: SiteConfig }>;
   };
   articles: {
-    list(): Promise<Res & { articles: ArticleSummary[] }>;
+    list(): Promise<Res & { articles: ArticleSummary[]; sections: SectionDef[] }>;
     read(path: string): Promise<Res & { frontMatter: FrontMatter; body: string }>;
     save(path: string, fm: FrontMatter, body: string): Promise<Res>;
     create(section: string, title: string): Promise<Res & { path: string }>;

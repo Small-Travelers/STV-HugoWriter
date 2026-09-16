@@ -53,6 +53,8 @@ export type FrontMatter = Record<string, unknown>;
 export interface GitInfo {
   gitInstalled: boolean;
   isRepo: boolean;
+  /** Git リポジトリのルート (サイトがサブディレクトリの場合は親側になる) */
+  gitRoot?: string;
   branch?: string;
   remoteUrl?: string;
   changedCount?: number;

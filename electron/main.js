@@ -507,48 +507,54 @@ function isAuthError(text) {
 const AUTH_HELP =
   'リポジトリへの接続に失敗しました。GitHub へのサインインが済んでいるか、リポジトリへのアクセス権があるか確認してください。';
 
+/** サイトフォルダが属する Git リポジトリのルートを返す (なければ null)。
+ *  サイト本体がリポジトリのサブディレクトリでも正しく検出できるよう、
+ *  git rev-parse --show-toplevel に問い合わせる。 */
+async function getGitRoot() {
+  if (!site.root) return null;
+  const r = await runGit(['rev-parse', '--show-toplevel'], site.root);
+  if (r.code !== 0) return null;
+  const p = r.out.trim();
+  return p ? path.normalize(p) : null;
+}
+
 async function gitInfo() {
   const ver = await runGit(['--version']);
   if (ver.code !== 0) return { gitInstalled: false, isRepo: false };
   if (!site.root) return { gitInstalled: true, isRepo: false };
 
-  // サイトフォルダ自体がリポジトリのルートである場合のみ Git 機能を有効にする
-  // (親フォルダのリポジトリを誤って操作しないため)
-  if (!fs.existsSync(path.join(site.root, '.git'))) {
+  const gitRoot = await getGitRoot();
+  if (!gitRoot) {
     return { gitInstalled: true, isRepo: false };
   }
-  const inTree = await runGit(['rev-parse', '--is-inside-work-tree'], site.root);
-  if (inTree.code !== 0 || !inTree.out.includes('true')) {
-    return { gitInstalled: true, isRepo: false };
-  }
-  const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], site.root)).out.trim();
-  const remote = (await runGit(['remote', 'get-url', 'origin'], site.root)).out.trim();
-  const status = await runGit(['status', '--porcelain'], site.root);
+  const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], gitRoot)).out.trim();
+  const remote = (await runGit(['remote', 'get-url', 'origin'], gitRoot)).out.trim();
+  const status = await runGit(['status', '--porcelain'], gitRoot);
   const changedCount = status.out.split('\n').filter((l) => l.trim()).length;
 
   let ahead = 0;
   let behind = 0;
   let hasUpstream = false;
-  const lr = await runGit(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], site.root);
+  const lr = await runGit(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], gitRoot);
   if (lr.code === 0) {
     hasUpstream = true;
     const m = lr.out.trim().split(/\s+/);
     ahead = Number(m[0] || 0);
     behind = Number(m[1] || 0);
   }
-  return { gitInstalled: true, isRepo: true, branch, remoteUrl: remote, changedCount, ahead, behind, hasUpstream };
+  return { gitInstalled: true, isRepo: true, gitRoot, branch, remoteUrl: remote, changedCount, ahead, behind, hasUpstream };
 }
 
 /** 作業ツリーに変更があれば自動コミットする */
-async function gitCommitAll() {
-  const status = await runGit(['status', '--porcelain'], site.root);
+async function gitCommitAll(gitRoot) {
+  const status = await runGit(['status', '--porcelain'], gitRoot);
   if (!status.out.trim()) return { committed: false };
-  const add = await runGit(['add', '-A'], site.root);
+  const add = await runGit(['add', '-A'], gitRoot);
   if (add.code !== 0) throw new Error('変更の取り込みに失敗しました:\n' + add.err.slice(-500));
   const s = loadUserSettings();
   const stamp = new Date().toLocaleString('ja-JP');
   const msg = `記事更新 (${s.authorName || '名前未設定'}, ${stamp})`;
-  const commit = await runGit([...gitIdentityArgs(), 'commit', '-m', msg], site.root);
+  const commit = await runGit([...gitIdentityArgs(), 'commit', '-m', msg], gitRoot);
   if (commit.code !== 0) throw new Error('保存 (コミット) に失敗しました:\n' + (commit.err || commit.out).slice(-500));
   return { committed: true };
 }
@@ -556,12 +562,14 @@ async function gitCommitAll() {
 /** 最新を取得 (必要ならローカル変更を先に自動コミット) */
 async function gitPull() {
   assertSiteOpen();
-  await gitCommitAll();
-  const pull = await runGit([...gitIdentityArgs(), 'pull', '--rebase'], site.root);
+  const gitRoot = await getGitRoot();
+  if (!gitRoot) throw new Error('このサイトは Git 管理されていません。');
+  await gitCommitAll(gitRoot);
+  const pull = await runGit([...gitIdentityArgs(), 'pull', '--rebase'], gitRoot);
   if (pull.code !== 0) {
     const text = pull.err + pull.out;
     if (/CONFLICT|could not apply|Resolve all conflicts/i.test(text)) {
-      await runGit(['rebase', '--abort'], site.root);
+      await runGit(['rebase', '--abort'], gitRoot);
       return {
         conflict: true,
         message:
@@ -580,10 +588,12 @@ async function gitPull() {
 /** 変更を送信 (自動コミット → 取得 → プッシュ) */
 async function gitSync() {
   assertSiteOpen();
+  const gitRoot = await getGitRoot();
+  if (!gitRoot) throw new Error('このサイトは Git 管理されていません。');
   const pulled = await gitPull();
   if (pulled.conflict) return pulled;
-  const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], site.root)).out.trim() || 'main';
-  const push = await runGit(['push', '-u', 'origin', branch], site.root);
+  const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], gitRoot)).out.trim() || 'main';
+  const push = await runGit(['push', '-u', 'origin', branch], gitRoot);
   if (push.code !== 0) {
     const text = push.err + push.out;
     if (isAuthError(text)) throw new Error(AUTH_HELP);

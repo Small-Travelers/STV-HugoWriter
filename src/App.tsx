@@ -277,7 +277,10 @@ export default function App() {
         <div className="topbar-actions">
           {gitReady && (
             <div className="git-box">
-              <span className="git-chip" title={gitInfo?.remoteUrl || ''}>
+              <span
+                className="git-chip"
+                title={[gitInfo?.remoteUrl, gitInfo?.gitRoot && `リポジトリ: ${gitInfo.gitRoot}`].filter(Boolean).join('\n')}
+              >
                 <span className="git-branch">{gitInfo?.branch}</span>
                 {gitInfo?.changedCount ? <span className="git-stat warn">変更 {gitInfo.changedCount}件</span> : <span className="git-stat">変更なし</span>}
                 {gitInfo?.hasUpstream && (gitInfo.ahead || 0) > 0 && <span className="git-stat">↑{gitInfo.ahead}</span>}

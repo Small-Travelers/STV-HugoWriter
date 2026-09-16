@@ -125,6 +125,15 @@ export default function EditorPane({ siteRoot, articlePath, siteConfig, settings
       editor.on('change', () => markDirty());
       editorRef.current = editor;
       setLoaded(true);
+      // 開発用: ?autoimgpopup=1 で画像挿入ポップアップを開く (表示確認)
+      if (new URLSearchParams(window.location.search).has('autoimgpopup')) {
+        window.setTimeout(() => {
+          (editor as unknown as { eventEmitter?: { emit: (e: string, n: string) => void } }).eventEmitter?.emit(
+            'openPopup',
+            'image'
+          );
+        }, 500);
+      }
     })();
     return () => {
       disposed = true;

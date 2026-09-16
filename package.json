@@ -1,7 +1,7 @@
 {
   "name": "stv-hugowriter",
   "productName": "STV-HugoWriter",
-  "version": "1.1.0-beta.2",
+  "version": "1.1.0-beta.3",
   "description": "だれでも簡単に使える Hugo ライター & ジェネレーター",
   "main": "electron/main.js",
   "author": "Small Travelers",

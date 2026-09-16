@@ -488,6 +488,25 @@ select {
   font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', Meiryo, sans-serif !important;
 }
 
+/* 画像挿入ポップアップなどのタブは固定幅のため、Noto Sans JP だと
+   「ファイル」が2行に折り返してしまう。幅を文字に合わせて自動化する */
+.toastui-editor-popup .toastui-editor-tabs .tab-item {
+  width: auto !important;
+  min-width: 64px;
+  padding: 0 14px;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+/* 右下の「マークダウン / WYSIWYG」切替も同様に幅を自動化する */
+.toastui-editor-mode-switch .tab-item {
+  width: auto !important;
+  min-width: 90px;
+  padding: 0 12px;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
 /* ---------- プレビュー ---------- */
 .preview-col {
   width: 44%;

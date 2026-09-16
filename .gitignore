@@ -4,4 +4,5 @@ release/
 resources/bin/
 sample-site/public/
 sample-site/resources/
+.hugo_build.lock
 *.log

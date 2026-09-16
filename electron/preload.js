@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('wpgen', {
   site: {
     selectFolder: invoke('site:selectFolder'),
     open: invoke('site:open'),
-    getConfig: invoke('site:getConfig'),
+    close: invoke('site:close'),
   },
   articles: {
     list: invoke('articles:list'),

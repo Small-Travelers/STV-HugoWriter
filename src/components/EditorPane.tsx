@@ -6,6 +6,7 @@ import { api, FrontMatter, SiteConfig, UserSettings } from '../types';
 import FrontMatterForm from './FrontMatterForm';
 
 interface Props {
+  siteRoot: string;
   articlePath: string;
   siteConfig: SiteConfig;
   settings: UserSettings;
@@ -15,7 +16,7 @@ interface Props {
 
 type SaveState = 'clean' | 'dirty' | 'saving';
 
-export default function EditorPane({ articlePath, siteConfig, settings, onSaved, onError }: Props) {
+export default function EditorPane({ siteRoot, articlePath, siteConfig, settings, onSaved, onError }: Props) {
   const editorElRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Editor | null>(null);
   const fmRef = useRef<FrontMatter>({});
@@ -36,7 +37,7 @@ export default function EditorPane({ articlePath, siteConfig, settings, onSaved,
     if (!editorRef.current || saveStateRef.current === 'saving') return;
     updateSaveState('saving');
     const body = editorRef.current.getMarkdown();
-    const r = await api.articles.save(articlePath, fmRef.current, body);
+    const r = await api.articles.save(siteRoot, articlePath, fmRef.current, body);
     if (r.ok) {
       updateSaveState('clean');
       setSavedAt(new Date().toLocaleTimeString('ja-JP'));
@@ -45,7 +46,7 @@ export default function EditorPane({ articlePath, siteConfig, settings, onSaved,
       updateSaveState('dirty');
       onError(r.error || '保存に失敗しました');
     }
-  }, [articlePath, onSaved, onError]);
+  }, [siteRoot, articlePath, onSaved, onError]);
 
   const markDirty = useCallback(() => {
     if (saveStateRef.current === 'clean') updateSaveState('dirty');
@@ -61,7 +62,7 @@ export default function EditorPane({ articlePath, siteConfig, settings, onSaved,
   useEffect(() => {
     let disposed = false;
     (async () => {
-      const r = await api.articles.read(articlePath);
+      const r = await api.articles.read(siteRoot, articlePath);
       if (!r.ok) {
         onError(r.error || '記事を読み込めませんでした');
         return;
@@ -87,6 +88,14 @@ export default function EditorPane({ articlePath, siteConfig, settings, onSaved,
       disposed = true;
       if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
       if (editorRef.current) {
+        // 未保存の変更が残っていれば、閉じる前に保存しておく
+        if (saveStateRef.current === 'dirty') {
+          try {
+            api.articles.save(siteRoot, articlePath, fmRef.current, editorRef.current.getMarkdown());
+          } catch {
+            // 保存できなくても閉じる処理は続行する
+          }
+        }
         editorRef.current.destroy();
         editorRef.current = null;
       }

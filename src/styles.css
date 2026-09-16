@@ -43,6 +43,97 @@ select {
   height: 100%;
 }
 
+/* ---------- タブバー (実験的: 複数サイト) ---------- */
+.tabbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  background: #e7eaee;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.tab-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 14px;
+  background: #f0f2f5;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  font-size: 13px;
+  max-width: 220px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.tab-item.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.tab-close:hover {
+  background: #fee2e2;
+  color: var(--danger);
+}
+
+.tab-add {
+  border: 1px dashed #c3c9d1;
+  background: none;
+  border-radius: 6px;
+  margin-bottom: 5px;
+  padding: 2px 12px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.tab-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.workspace.hidden {
+  display: none;
+}
+
+.wide-divider {
+  width: 100%;
+}
+
+.clone-row.full-width {
+  width: 100%;
+}
+
 /* ---------- 上部バー ---------- */
 .topbar {
   display: flex;

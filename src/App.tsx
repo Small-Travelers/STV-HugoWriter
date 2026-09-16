@@ -1,238 +1,149 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, ArticleSummary, GitInfo, SectionDef, SiteConfig, UserSettings } from './types';
-import Sidebar from './components/Sidebar';
-import EditorPane from './components/EditorPane';
-import SettingsDialog from './components/SettingsDialog';
-import NewArticleDialog from './components/NewArticleDialog';
-import PublishDialog from './components/PublishDialog';
+import { useCallback, useEffect, useState } from 'react';
+import { api, SiteConfig, UserSettings } from './types';
+import SiteWorkspace from './components/SiteWorkspace';
 
-type Screen = 'loading' | 'setup' | 'main';
+interface TabInfo {
+  root: string;
+  hugoRoot: string;
+  config: SiteConfig;
+}
+
+type Screen = 'loading' | 'welcome' | 'main';
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('loading');
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [appVersion, setAppVersion] = useState('');
-  const [siteConfig, setSiteConfig] = useState<SiteConfig | null>(null);
-  const [siteRoot, setSiteRoot] = useState('');
-  const [hugoRoot, setHugoRoot] = useState('');
-  const [articles, setArticles] = useState<ArticleSummary[]>([]);
-  const [listSections, setListSections] = useState<SectionDef[]>([]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [reloadNonce, setReloadNonce] = useState(0);
-  const [previewUrl, setPreviewUrl] = useState('');
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
-  const [gitBusy, setGitBusy] = useState<'pull' | 'sync' | null>(null);
-  const [gitDialogMsg, setGitDialogMsg] = useState('');
+  const [tabs, setTabs] = useState<TabInfo[]>([]);
+  const [activeRoot, setActiveRoot] = useState('');
+  const [showAddDialog, setShowAddDialog] = useState(false);
   const [cloneUrl, setCloneUrl] = useState('');
   const [cloneBusy, setCloneBusy] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showPublish, setShowPublish] = useState(false);
-  const [deployConfigured, setDeployConfigured] = useState(false);
-  const [showNewDialog, setShowNewDialog] = useState(false);
-  const [setupError, setSetupError] = useState('');
+  const [welcomeError, setWelcomeError] = useState('');
   const [toast, setToast] = useState('');
-  const gitBusyRef = useRef<typeof gitBusy>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     window.setTimeout(() => setToast(''), 5000);
   }, []);
 
-  const refreshArticles = useCallback(async () => {
-    const r = await api.articles.list();
-    if (r.ok) {
-      setArticles(r.articles);
-      setListSections(r.sections ?? []);
-    }
+  const persistTabs = useCallback((nextTabs: TabInfo[], nextActive: string) => {
+    api.settings.set({ openTabs: nextTabs.map((t) => t.root), activeTab: nextActive });
   }, []);
 
-  const refreshGit = useCallback(async () => {
-    if (gitBusyRef.current) return;
-    const r = await api.git.info();
-    if (r.ok) setGitInfo(r.info);
-  }, []);
-
-  const openSite = useCallback(
-    async (root: string) => {
+  /** サイトを開いてタブに追加する (既に開いていればアクティブ化) */
+  const openTab = useCallback(
+    async (root: string): Promise<boolean> => {
+      const existing = tabs.find((t) => t.root.toLowerCase() === root.toLowerCase());
+      if (existing) {
+        setActiveRoot(existing.root);
+        persistTabs(tabs, existing.root);
+        setScreen('main');
+        return true;
+      }
       const r = await api.site.open(root);
       if (!r.ok) {
-        setSetupError(r.error || 'サイトを開けませんでした');
-        setScreen('setup');
+        setWelcomeError(r.error || 'サイトを開けませんでした');
+        if (screen === 'main') showToast(r.error || 'サイトを開けませんでした');
         return false;
       }
-      setSiteRoot(r.root!);
-      setHugoRoot(r.hugoRoot || r.root!);
-      setSiteConfig(r.config!);
-      setSetupError('');
-      setSelectedPath(null);
+      const tab: TabInfo = { root: r.root!, hugoRoot: r.hugoRoot || r.root!, config: r.config! };
+      const nextTabs = [...tabs, tab];
+      setTabs(nextTabs);
+      setActiveRoot(tab.root);
+      setWelcomeError('');
       setScreen('main');
-      const list = await api.articles.list();
-      if (list.ok) {
-        setArticles(list.articles);
-        setListSections(list.sections ?? []);
-        // 開発用: ?autoselect=1 付きで起動したときは先頭の記事を開く
-        const params = new URLSearchParams(window.location.search);
-        if (params.has('autoselect') && list.articles.length > 0) {
-          setSelectedPath(list.articles[0].path);
-        }
-        if (params.has('autopreview')) {
-          const p = await api.preview.start();
-          if (p.ok && p.url) setPreviewUrl(p.url);
-        }
-        if (params.has('autodeploy')) {
-          const d = await api.deploy.run(params.get('autodeploy') || '', false);
-          showToast(d.ok ? `deploy OK: ${d.files} files / ${d.seconds}s` : `deploy NG: ${d.error}`);
-        }
-        if (params.has('autogit')) {
-          const g = params.get('autogit') === 'pull' ? await api.git.pull() : await api.git.sync();
-          showToast(g.ok ? `git: ${g.message || 'OK'}${g.conflict ? ' [conflict]' : ''}` : `git NG: ${g.error}`);
-        }
-      }
-      refreshGit();
-      api.deploy.state().then((d) => setDeployConfigured(!!(d.ok && d.configured)));
+      persistTabs(nextTabs, tab.root);
       return true;
     },
-    [refreshGit, showToast]
+    [tabs, screen, persistTabs, showToast]
   );
 
+  const closeTab = useCallback(
+    async (root: string) => {
+      await api.site.close(root);
+      const nextTabs = tabs.filter((t) => t.root !== root);
+      let nextActive = activeRoot;
+      if (activeRoot === root) {
+        nextActive = nextTabs.length > 0 ? nextTabs[nextTabs.length - 1].root : '';
+      }
+      setTabs(nextTabs);
+      setActiveRoot(nextActive);
+      persistTabs(nextTabs, nextActive);
+      if (nextTabs.length === 0) setScreen('welcome');
+    },
+    [tabs, activeRoot, persistTabs]
+  );
+
+  const selectTab = useCallback(
+    (root: string) => {
+      setActiveRoot(root);
+      persistTabs(tabs, root);
+    },
+    [tabs, persistTabs]
+  );
+
+  // 起動時: 前回開いていたタブを復元する
   useEffect(() => {
     (async () => {
       const info = await api.app.info();
       if (info.ok) setAppVersion(info.version);
       const r = await api.settings.get();
-      if (r.ok) setSettings(r.settings);
-      if (r.ok && r.settings.sitePath) {
-        await openSite(r.settings.sitePath);
-      } else {
-        setScreen('setup');
+      if (!r.ok) {
+        setScreen('welcome');
+        return;
       }
+      setSettings(r.settings);
+      const roots = [...new Set(r.settings.openTabs || [])];
+      const opened: TabInfo[] = [];
+      for (const root of roots) {
+        const o = await api.site.open(root);
+        if (o.ok) {
+          opened.push({ root: o.root!, hugoRoot: o.hugoRoot || o.root!, config: o.config! });
+        }
+      }
+      if (opened.length === 0) {
+        setScreen('welcome');
+        return;
+      }
+      setTabs(opened);
+      const active = opened.find((t) => t.root === r.settings.activeTab)?.root ?? opened[0].root;
+      setActiveRoot(active);
+      setScreen('main');
     })();
-  }, [openSite]);
-
-  useEffect(() => {
-    const off = api.preview.onStopped(() => setPreviewUrl(''));
-    return off;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ウィンドウにフォーカスが戻ったら Git 状態を確認し直す
-  useEffect(() => {
-    const onFocus = () => {
-      if (screen === 'main') refreshGit();
-    };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [screen, refreshGit]);
 
   const handleSelectFolder = async () => {
     const r = await api.site.selectFolder();
-    if (r.ok && r.path) await openSite(r.path);
+    if (r.ok && r.path) {
+      const ok = await openTab(r.path);
+      if (ok) setShowAddDialog(false);
+    }
   };
 
   const handleClone = async () => {
     if (!cloneUrl.trim()) return;
     setCloneBusy(true);
-    setSetupError('');
+    setWelcomeError('');
     const r = await api.git.clone(cloneUrl.trim());
     setCloneBusy(false);
     if (!r.ok) {
-      setSetupError(r.error || 'リポジトリの取得に失敗しました');
+      setWelcomeError(r.error || 'リポジトリの取得に失敗しました');
+      if (screen === 'main') showToast(r.error || 'リポジトリの取得に失敗しました');
       return;
     }
     if (r.canceled || !r.root) return;
-    await openSite(r.root);
+    setCloneUrl('');
+    const ok = await openTab(r.root);
+    if (ok) setShowAddDialog(false);
   };
-
-  const handleTogglePreview = async () => {
-    if (previewUrl) {
-      await api.preview.stop();
-      setPreviewUrl('');
-      return;
-    }
-    setPreviewLoading(true);
-    const r = await api.preview.start();
-    setPreviewLoading(false);
-    if (r.ok && r.url) {
-      setPreviewUrl(r.url);
-    } else {
-      showToast(r.error || 'プレビューを開始できませんでした');
-    }
-  };
-
-  const runGitAction = async (kind: 'pull' | 'sync') => {
-    if (gitBusy) return;
-    setGitBusy(kind);
-    gitBusyRef.current = kind;
-    try {
-      const r = kind === 'pull' ? await api.git.pull() : await api.git.sync();
-      if (!r.ok) {
-        setGitDialogMsg(r.error || '操作に失敗しました');
-      } else if (r.conflict) {
-        setGitDialogMsg(r.message || '競合が発生しました');
-      } else {
-        showToast(r.message || '完了しました');
-      }
-    } finally {
-      setGitBusy(null);
-      gitBusyRef.current = null;
-    }
-    await refreshArticles();
-    await refreshGit();
-    // 取得で記事ファイルが変わっている可能性があるため、開いている記事を読み直す
-    setReloadNonce((n) => n + 1);
-  };
-
-  const handleCreate = async (section: string, title: string) => {
-    const r = await api.articles.create(section, title);
-    setShowNewDialog(false);
-    if (r.ok) {
-      await refreshArticles();
-      setSelectedPath(r.path);
-      refreshGit();
-    } else {
-      showToast(r.error || '記事を作成できませんでした');
-    }
-  };
-
-  const handleDelete = async (path: string) => {
-    const a = articles.find((x) => x.path === path);
-    if (!window.confirm(`「${a?.title ?? path}」をごみ箱に移動しますか?`)) return;
-    const r = await api.articles.delete(path);
-    if (r.ok) {
-      if (selectedPath === path) setSelectedPath(null);
-      await refreshArticles();
-      refreshGit();
-      showToast('ごみ箱に移動しました');
-    } else {
-      showToast(r.error || '削除できませんでした');
-    }
-  };
-
-  const handleSaved = useCallback(() => {
-    refreshArticles();
-    refreshGit();
-  }, [refreshArticles, refreshGit]);
-
-  // メインプロセスが返すセクション一覧 (設定+自動検出、記事0件のフォルダも含む) を使い、
-  // 念のため記事側にしか現れないもの (content 直下ページなど) も補う
-  const sectionList = useMemo<SectionDef[]>(() => {
-    const base = listSections.length > 0 ? listSections : siteConfig?.sections ?? [];
-    const list: SectionDef[] = base.map((s) => ({ ...s }));
-    const have = new Set(list.map((s) => s.dir));
-    for (const a of articles) {
-      if (!have.has(a.section)) {
-        have.add(a.section);
-        list.push({ dir: a.section, label: a.sectionLabel || a.section || 'その他のページ' });
-      }
-    }
-    return list;
-  }, [listSections, siteConfig, articles]);
 
   if (screen === 'loading') {
     return <div className="center-screen">読み込み中…</div>;
   }
 
-  if (screen === 'setup') {
+  if (screen === 'welcome') {
     return (
       <div className="center-screen setup">
         <h1>STV-HugoWriter へようこそ</h1>
@@ -262,141 +173,82 @@ export default function App() {
             {cloneBusy ? '取得中…' : 'リポジトリから取得'}
           </button>
         </div>
-        {setupError && <p className="error">{setupError}</p>}
+        {welcomeError && <p className="error">{welcomeError}</p>}
         <div className="version-footer">STV-HugoWriter v{appVersion}</div>
       </div>
     );
   }
 
-  const gitReady = !!gitInfo?.gitInstalled && !!gitInfo?.isRepo;
-
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="topbar-title">
-          <span className="site-name">{siteConfig?.siteName}</span>
-          <span className="site-root" title={hugoRoot !== siteRoot ? `リポジトリ: ${siteRoot}\nサイト本体: ${hugoRoot}` : siteRoot}>
-            {siteRoot}
-            {hugoRoot !== siteRoot && (
-              <span className="hugo-sub"> (サイト: {hugoRoot.slice(siteRoot.length).replace(/^[\\/]/, '')})</span>
-            )}
-          </span>
-        </div>
-        <div className="topbar-actions">
-          {gitReady && (
-            <div className="git-box">
-              <span
-                className="git-chip"
-                title={[gitInfo?.remoteUrl, gitInfo?.gitRoot && `リポジトリ: ${gitInfo.gitRoot}`].filter(Boolean).join('\n')}
-              >
-                <span className="git-branch">{gitInfo?.branch}</span>
-                {gitInfo?.changedCount ? <span className="git-stat warn">変更 {gitInfo.changedCount}件</span> : <span className="git-stat">変更なし</span>}
-                {gitInfo?.hasUpstream && (gitInfo.ahead || 0) > 0 && <span className="git-stat">↑{gitInfo.ahead}</span>}
-                {gitInfo?.hasUpstream && (gitInfo.behind || 0) > 0 && <span className="git-stat">↓{gitInfo.behind}</span>}
-              </span>
-              <button className="btn" onClick={() => runGitAction('pull')} disabled={!!gitBusy}>
-                {gitBusy === 'pull' ? '取得中…' : '最新を取得'}
-              </button>
-              <button className="btn" onClick={() => runGitAction('sync')} disabled={!!gitBusy}>
-                {gitBusy === 'sync' ? '送信中…' : '変更を送信'}
-              </button>
-            </div>
-          )}
-          <button
-            className={'btn ' + (previewUrl ? 'active' : '')}
-            onClick={handleTogglePreview}
-            disabled={previewLoading}
+      <div className="tabbar">
+        {tabs.map((t) => (
+          <div
+            key={t.root}
+            className={'tab-item ' + (t.root === activeRoot ? 'active' : '')}
+            title={t.root}
+            onClick={() => selectTab(t.root)}
           >
-            {previewLoading ? '起動中…' : previewUrl ? 'プレビューを閉じる' : 'サイトをプレビュー'}
-          </button>
-          {deployConfigured && (
-            <button className="btn publish" onClick={() => setShowPublish(true)}>サイトを公開</button>
-          )}
-          <button className="btn" onClick={() => setShowSettings(true)}>設定</button>
-        </div>
-      </header>
-
-      <div className="main-area">
-        <Sidebar
-          articles={articles}
-          sections={sectionList}
-          selectedPath={selectedPath}
-          onSelect={setSelectedPath}
-          onNew={() => setShowNewDialog(true)}
-          onDelete={handleDelete}
-        />
-
-        <div className="editor-col">
-          {selectedPath && settings && siteConfig ? (
-            <EditorPane
-              key={`${selectedPath}#${reloadNonce}`}
-              articlePath={selectedPath}
-              siteConfig={siteConfig}
-              settings={settings}
-              onSaved={handleSaved}
-              onError={showToast}
-            />
-          ) : (
-            <div className="center-screen muted">
-              左の一覧から記事を選ぶか、「新しい記事」を押してください
-            </div>
-          )}
-        </div>
-
-        {previewUrl && (
-          <div className="preview-col">
-            <div className="preview-bar">
-              <span>プレビュー</span>
-              <button
-                className="btn small"
-                onClick={() => {
-                  const f = document.getElementById('preview-frame') as HTMLIFrameElement | null;
-                  if (f) f.src = f.src;
-                }}
-              >
-                再読み込み
-              </button>
-            </div>
-            <iframe id="preview-frame" src={previewUrl} title="プレビュー" />
+            <span className="tab-name">{t.config.siteName}</span>
+            <button
+              className="tab-close"
+              title="タブを閉じる"
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(t.root);
+              }}
+            >
+              ×
+            </button>
           </div>
-        )}
+        ))}
+        <button className="tab-add" title="別のサイトを開く" onClick={() => setShowAddDialog(true)}>
+          +
+        </button>
       </div>
 
-      {showSettings && settings && (
-        <SettingsDialog
-          settings={settings}
-          siteConfig={siteConfig}
-          siteRoot={siteRoot}
+      {tabs.map((t, i) => (
+        <SiteWorkspace
+          key={t.root}
+          root={t.root}
+          hugoRoot={t.hugoRoot}
+          config={t.config}
+          settings={settings!}
+          active={t.root === activeRoot}
+          isFirst={i === 0}
           appVersion={appVersion}
-          gitInfo={gitInfo}
-          onChangeSite={handleSelectFolder}
-          onClose={async (updated) => {
-            if (updated) {
-              const r = await api.settings.set(updated);
-              if (r.ok) setSettings(r.settings);
-            }
-            setShowSettings(false);
-          }}
+          showToast={showToast}
+          onSettingsSaved={setSettings}
         />
-      )}
+      ))}
 
-      {showNewDialog && siteConfig && (
-        <NewArticleDialog
-          sections={sectionList}
-          onCreate={handleCreate}
-          onCancel={() => setShowNewDialog(false)}
-        />
-      )}
-
-      {showPublish && <PublishDialog onClose={() => setShowPublish(false)} />}
-
-      {gitDialogMsg && (
-        <div className="modal-backdrop" onClick={() => setGitDialogMsg('')}>
+      {showAddDialog && (
+        <div className="modal-backdrop" onClick={() => setShowAddDialog(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>同期の結果</h2>
-            <p className="prewrap">{gitDialogMsg}</p>
+            <h2>別のサイトを開く</h2>
+            <div className="settings-body">
+              <button className="btn primary wide" onClick={handleSelectFolder}>
+                サイトのフォルダを選択…
+              </button>
+              <div className="setup-divider wide-divider">または Git リポジトリから取得</div>
+              <div className="clone-row full-width">
+                <input
+                  type="text"
+                  placeholder="https://github.com/団体名/サイト名.git"
+                  value={cloneUrl}
+                  onChange={(e) => setCloneUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleClone();
+                  }}
+                />
+                <button className="btn" onClick={handleClone} disabled={cloneBusy || !cloneUrl.trim()}>
+                  {cloneBusy ? '取得中…' : '取得'}
+                </button>
+              </div>
+              {welcomeError && <p className="error">{welcomeError}</p>}
+            </div>
             <div className="modal-actions">
-              <button className="btn primary" onClick={() => setGitDialogMsg('')}>閉じる</button>
+              <button className="btn" onClick={() => setShowAddDialog(false)}>キャンセル</button>
             </div>
           </div>
         </div>

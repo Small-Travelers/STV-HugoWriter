@@ -66,6 +66,10 @@ select {
   font-weight: 700;
 }
 
+.hugo-sub {
+  color: var(--accent);
+}
+
 .site-root {
   color: var(--muted);
   font-size: 12px;

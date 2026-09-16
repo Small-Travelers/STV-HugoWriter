@@ -13,6 +13,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState('');
   const [siteConfig, setSiteConfig] = useState<SiteConfig | null>(null);
   const [siteRoot, setSiteRoot] = useState('');
+  const [hugoRoot, setHugoRoot] = useState('');
   const [articles, setArticles] = useState<ArticleSummary[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -54,6 +55,7 @@ export default function App() {
         return false;
       }
       setSiteRoot(r.root!);
+      setHugoRoot(r.hugoRoot || r.root!);
       setSiteConfig(r.config!);
       setSetupError('');
       setSelectedPath(null);
@@ -245,7 +247,12 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-title">
           <span className="site-name">{siteConfig?.siteName}</span>
-          <span className="site-root" title={siteRoot}>{siteRoot}</span>
+          <span className="site-root" title={hugoRoot !== siteRoot ? `リポジトリ: ${siteRoot}\nサイト本体: ${hugoRoot}` : siteRoot}>
+            {siteRoot}
+            {hugoRoot !== siteRoot && (
+              <span className="hugo-sub"> (サイト: {hugoRoot.slice(siteRoot.length).replace(/^[\\/]/, '')})</span>
+            )}
+          </span>
         </div>
         <div className="topbar-actions">
           {gitReady && (

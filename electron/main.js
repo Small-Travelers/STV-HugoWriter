@@ -67,14 +67,18 @@ const DEFAULT_SITE_CONFIG = {
   deploy: {},
 };
 
-/** 現在開いているサイトの状態 */
+/** 現在開いているサイトの状態
+ *  root     … ユーザーが選択したフォルダ (Git リポジトリのルートを想定)
+ *  hugoRoot … hugo.toml 等がある Hugo サイト本体のフォルダ (root と同じか、その下位)
+ */
 const site = {
   root: '',
+  hugoRoot: '',
   config: null,
 };
 
 function findHugoConfig(root) {
-  const names = ['hugo.toml', 'hugo.yaml', 'hugo.json', 'config.toml', 'config.yaml', 'config.json'];
+  const names = ['hugo.toml', 'hugo.yaml', 'hugo.yml', 'hugo.json', 'config.toml', 'config.yaml', 'config.yml', 'config.json'];
   for (const n of names) {
     if (fs.existsSync(path.join(root, n))) return n;
   }
@@ -82,13 +86,56 @@ function findHugoConfig(root) {
   return null;
 }
 
-function loadSiteConfig(root) {
-  const p = path.join(root, SITE_CONFIG_FILENAME);
-  let cfg = {};
-  if (fs.existsSync(p)) {
-    // メモ帳等で保存されたときの UTF-8 BOM も許容する
-    cfg = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, ''));
+// Hugo サイト探索時に降りないディレクトリ (Hugo サイト内部の構造や生成物)
+const HUGO_SEARCH_SKIP = new Set([
+  '.git', 'node_modules', 'public', 'resources', 'themes', 'content',
+  'layouts', 'static', 'assets', 'archetypes', 'data', 'i18n', 'release', 'dist',
+]);
+
+/** 選択フォルダの直下に Hugo 設定がなければ、下位ディレクトリ (深さ3まで) から探す */
+function findHugoRoot(root, maxDepth = 3) {
+  if (findHugoConfig(root)) return root;
+  const found = [];
+  const queue = [{ dir: root, depth: 0 }];
+  while (queue.length > 0) {
+    const { dir, depth } = queue.shift();
+    if (depth >= maxDepth) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      if (HUGO_SEARCH_SKIP.has(ent.name) || ent.name.startsWith('.')) continue;
+      const full = path.join(dir, ent.name);
+      if (findHugoConfig(full)) {
+        found.push(full);
+      } else {
+        queue.push({ dir: full, depth: depth + 1 });
+      }
+    }
   }
+  if (found.length === 0) return null;
+  // 複数見つかった場合は浅い方 → 名前順で決定的に選ぶ
+  found.sort((a, b) => {
+    const da = a.split(path.sep).length - b.split(path.sep).length;
+    return da !== 0 ? da : a.localeCompare(b);
+  });
+  return found[0];
+}
+
+function readSiteConfigFile(dir) {
+  const p = path.join(dir, SITE_CONFIG_FILENAME);
+  if (!fs.existsSync(p)) return null;
+  // メモ帳等で保存されたときの UTF-8 BOM も許容する
+  return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, ''));
+}
+
+/** wpgen.site.json は選択フォルダ直下を優先し、なければ Hugo フォルダ直下も見る */
+function loadSiteConfig(root, hugoRoot) {
+  const cfg = readSiteConfigFile(root) || (hugoRoot && hugoRoot !== root ? readSiteConfigFile(hugoRoot) : null) || {};
   const merged = {
     ...DEFAULT_SITE_CONFIG,
     ...cfg,
@@ -107,7 +154,7 @@ function assertSiteOpen() {
 /** content/ 配下の相対パスであることを検証して絶対パスを返す(パストラバーサル防止) */
 function articleAbsPath(relPath) {
   assertSiteOpen();
-  const contentDir = path.join(site.root, 'content');
+  const contentDir = path.join(site.hugoRoot, 'content');
   const abs = path.resolve(contentDir, relPath);
   if (!abs.startsWith(contentDir + path.sep)) {
     throw new Error('不正なパスです: ' + relPath);
@@ -132,7 +179,7 @@ function walkMarkdown(dir, out) {
 
 function listArticles() {
   assertSiteOpen();
-  const contentDir = path.join(site.root, 'content');
+  const contentDir = path.join(site.hugoRoot, 'content');
   const result = [];
   for (const section of site.config.sections) {
     const dir = path.join(contentDir, section.dir);
@@ -200,7 +247,7 @@ function createArticle(sectionDir, title) {
   const pattern = site.config.newArticle.filenamePattern || '{date}-{slug}.md';
   let base = pattern.replace('{date}', ymd).replace('{slug}', slugify(title));
 
-  const dir = path.join(site.root, 'content', section.dir);
+  const dir = path.join(site.hugoRoot, 'content', section.dir);
   fs.mkdirSync(dir, { recursive: true });
 
   let file = path.join(dir, base);
@@ -219,7 +266,7 @@ function createArticle(sectionDir, title) {
   if (userSettings.authorName) fm.author = userSettings.authorName;
 
   fs.writeFileSync(file, matter.stringify('\n', fm), 'utf8');
-  const contentDir = path.join(site.root, 'content');
+  const contentDir = path.join(site.hugoRoot, 'content');
   return { path: path.relative(contentDir, file).split(path.sep).join('/') };
 }
 
@@ -274,7 +321,7 @@ async function startPreview() {
     '-D',
     '--port', String(port),
     '--bind', '127.0.0.1',
-    '--source', site.root,
+    '--source', site.hugoRoot,
     '--disableBrowserError',
   ];
   const proc = spawn(hugo, args, { shell: hugo === 'hugo', windowsHide: true });
@@ -472,19 +519,48 @@ function openSite(root) {
   if (!root || !fs.existsSync(root)) {
     return { ok: false, error: 'フォルダが見つかりません: ' + root };
   }
-  if (!findHugoConfig(root)) {
-    return { ok: false, error: 'このフォルダは Hugo サイトではないようです (hugo.toml / config.toml が見つかりません)' };
+
+  // 管理者設定 (選択フォルダ直下) の hugoDir 指定を最優先で使う
+  let hugoRoot = null;
+  try {
+    const rootCfg = readSiteConfigFile(root);
+    if (rootCfg && rootCfg.hugoDir) {
+      const candidate = path.resolve(root, rootCfg.hugoDir);
+      if (!candidate.startsWith(path.resolve(root))) {
+        return { ok: false, error: `サイト設定の hugoDir が選択フォルダの外を指しています: ${rootCfg.hugoDir}` };
+      }
+      if (!findHugoConfig(candidate)) {
+        return { ok: false, error: `サイト設定の hugoDir (${rootCfg.hugoDir}) に hugo.toml / config.toml が見つかりません` };
+      }
+      hugoRoot = candidate;
+    }
+  } catch (e) {
+    return { ok: false, error: `サイト設定ファイル (${SITE_CONFIG_FILENAME}) の読み込みに失敗しました: ${e.message}` };
   }
+
+  // 指定がなければ直下 → 下位ディレクトリの順で自動検出
+  if (!hugoRoot) {
+    hugoRoot = findHugoRoot(root);
+  }
+  if (!hugoRoot) {
+    return {
+      ok: false,
+      error: 'Hugo サイトが見つかりません (このフォルダにもその下位にも hugo.toml / config.toml がありません)',
+    };
+  }
+
   stopPreview();
   site.root = root;
+  site.hugoRoot = hugoRoot;
   try {
-    site.config = loadSiteConfig(root);
+    site.config = loadSiteConfig(root, hugoRoot);
   } catch (e) {
     site.root = '';
+    site.hugoRoot = '';
     return { ok: false, error: `サイト設定ファイル (${SITE_CONFIG_FILENAME}) の読み込みに失敗しました: ${e.message}` };
   }
   saveUserSettings({ sitePath: root });
-  return { ok: true, root, config: site.config };
+  return { ok: true, root, hugoRoot, config: site.config };
 }
 
 // ---------------------------------------------------------------------------
@@ -515,7 +591,7 @@ ipcMain.handle('site:selectFolder', wrap(async () => {
 ipcMain.handle('site:open', async (_e, root) => openSite(root));
 ipcMain.handle('site:getConfig', wrap(() => {
   assertSiteOpen();
-  return { root: site.root, config: site.config };
+  return { root: site.root, hugoRoot: site.hugoRoot, config: site.config };
 }));
 
 ipcMain.handle('articles:list', wrap(() => ({ articles: listArticles() })));

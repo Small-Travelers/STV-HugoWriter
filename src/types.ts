@@ -24,6 +24,8 @@ export interface FrontMatterFieldDef {
 
 export interface SiteConfig {
   siteName: string;
+  /** 選択フォルダから Hugo サイト本体への相対パス (管理者が任意で指定) */
+  hugoDir?: string;
   sections: SectionDef[];
   frontMatterFields: FrontMatterFieldDef[];
   newArticle: {
@@ -74,8 +76,8 @@ export interface WpgenApi {
   };
   site: {
     selectFolder(): Promise<Res & { path: string | null }>;
-    open(root: string): Promise<Res & { root?: string; config?: SiteConfig }>;
-    getConfig(): Promise<Res & { root: string; config: SiteConfig }>;
+    open(root: string): Promise<Res & { root?: string; hugoRoot?: string; config?: SiteConfig }>;
+    getConfig(): Promise<Res & { root: string; hugoRoot: string; config: SiteConfig }>;
   };
   articles: {
     list(): Promise<Res & { articles: ArticleSummary[] }>;

@@ -1,7 +1,7 @@
 {
   "name": "wpgen",
   "productName": "HugoWriter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "だれでも簡単に使える Hugo ライター & ジェネレーター",
   "main": "electron/main.js",
   "author": "wpgen project",

@@ -1,18 +1,18 @@
-# HugoWriter 管理者ガイド
+# STV-HugoWriter 管理者ガイド
 
 このドキュメントは、サイトを管理する担当者向けです。
 執筆メンバーには README の「使い方 (執筆者向け)」を案内してください。
 
 ## 全体の仕組み
 
-- 各メンバーの PC に HugoWriter をインストールします。
+- 各メンバーの PC に STV-HugoWriter をインストールします (手順は [install-guide.md](install-guide.md))。
 - サイトの原稿一式 (Hugo プロジェクト) は Git の中央リポジトリで共有します。
-  各メンバーはローカルにクローンされたフォルダを HugoWriter で開いて執筆します。
+  各メンバーはローカルにクローンされたフォルダを STV-HugoWriter で開いて執筆します。
 - **サイトに関する設定は、Hugo プロジェクト直下の `wpgen.site.json` に記述します。**
   このファイルはリポジトリと一緒に全員へ配布され、アプリからは閲覧のみ可能です。
   変更するのは管理者だけ、というルールで運用してください。
 - 個人の執筆環境 (文字サイズ・自動保存・署名) は各ユーザーの PC 内
-  (`%APPDATA%\HugoWriter\settings.json`) に保存され、サイトには影響しません。
+  (`%APPDATA%\STV-HugoWriter\settings.json`) に保存され、サイトには影響しません。
 
 ## wpgen.site.json リファレンス
 

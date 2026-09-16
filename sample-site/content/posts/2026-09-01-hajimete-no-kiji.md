@@ -4,7 +4,7 @@ date: 2026-09-01T10:00:00+09:00
 draft: false
 tags:
   - お試し
-description: HugoWriter で作成したサンプル記事です。
+description: STV-HugoWriter で作成したサンプル記事です。
 ---
 
 これはサンプル記事です。**太字**や*斜体*、リストも使えます。

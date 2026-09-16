@@ -1,7 +1,10 @@
-# HugoWriter (wpgen)
+# STV-HugoWriter
 
 だれでも簡単に使える、Windows 用の Hugo ライター & ジェネレーターです。
 団体での利用を想定しており、各メンバーの PC にインストールして使います。
+
+- インストール手順: [docs/install-guide.md](docs/install-guide.md)
+- 管理者向けガイド: [docs/admin-guide.md](docs/admin-guide.md)
 
 - **執筆者**: 記事の作成・編集・削除、見たまま編集 (WYSIWYG) / Markdown、サイトのライブプレビュー
 - **管理者**: サイト側の設定 (セクション構成・入力項目など) を `wpgen.site.json` で一元管理
@@ -9,7 +12,7 @@
 
 ## 使い方 (執筆者向け)
 
-1. インストーラ (`release/HugoWriter Setup *.exe`) でインストールします。
+1. インストーラ (`STV-HugoWriter Setup *.exe`) でインストールします ([インストールガイド](docs/install-guide.md))。
 2. 初回起動時に、管理者から共有された **Hugo サイトのフォルダ** を選択します。
    (試すだけなら、このリポジトリの `sample-site` フォルダを選択してください)
 3. 「+ 新しい記事」でタイトルを入力すると下書きが作られます。
@@ -50,16 +53,25 @@ npm run dev        # Vite + Electron を起動 (開発モード)
 npm run dist       # Windows インストーラをビルド (release/ に出力)
 ```
 
-- `electron/` … メインプロセス (ファイル操作・Hugo サーバ管理・設定管理)
+- `electron/` … メインプロセス (ファイル操作・Hugo サーバ管理・Git/FTP・設定管理)
 - `src/` … レンダラ (React + Toast UI Editor)
 - `resources/bin/hugo.exe` … パッケージに同梱する Hugo 本体 (未配置なら PATH 上の hugo を使用)
 - `sample-site/` … 動作確認用のサンプル Hugo サイト (テーマ `wpgen-basic` 同梱)
+- アプリのアイコンを変える場合は `build/icon.ico` (256×256 を含むマルチサイズ .ico) を置いて
+  `npm run dist` を実行します (`build/icon.png` 512×512 以上でも可、自動変換されます)
 
 ### サイトの公開 (v0.3 から)
 
 管理者が公開先 (FTP/FTPS) を設定しているサイトでは、上部に緑の「**サイトを公開**」ボタンが表示されます。
 押すと下書きを除いた本番ビルドが作られ、サーバへアップロードされます。
 FTP パスワードは初回に入力し、希望すれば自分の PC に暗号化保存されます。
+
+## ライセンス
+
+本ソフトウェアは [MIT License](LICENSE) で公開されています。
+利用しているオープンソースソフトウェア・フォントの一覧と表記は
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください
+(同梱している Hugo は Apache License 2.0、Noto Sans JP フォントは SIL OFL 1.1 です)。
 
 ## 今後の予定 (ロードマップ)
 

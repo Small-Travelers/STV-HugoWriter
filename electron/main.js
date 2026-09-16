@@ -1,4 +1,4 @@
-// HugoWriter - Electron メインプロセス
+// STV-HugoWriter - Electron メインプロセス
 // サイト(Hugoプロジェクト)の読み書き・Hugoプレビューサーバの管理・設定管理を担当する。
 const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('node:path');
@@ -495,7 +495,7 @@ function runGit(args, cwd) {
 
 function gitIdentityArgs() {
   const s = loadUserSettings();
-  const name = s.authorName || 'HugoWriter';
+  const name = s.authorName || 'STV-HugoWriter';
   const email = s.authorEmail || 'hugowriter@users.noreply.local';
   return ['-c', `user.name=${name}`, '-c', `user.email=${email}`];
 }
@@ -921,7 +921,7 @@ function createWindow() {
     height: 860,
     minWidth: 960,
     minHeight: 600,
-    title: 'HugoWriter',
+    title: 'STV-HugoWriter',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -954,7 +954,29 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+/** 旧名 (HugoWriter) 時代のユーザー設定を新しい保存先へ引き継ぐ */
+function migrateLegacyUserData() {
+  try {
+    const newDir = app.getPath('userData');
+    const oldDir = path.join(app.getPath('appData'), 'HugoWriter');
+    if (path.resolve(oldDir) === path.resolve(newDir) || !fs.existsSync(oldDir)) return;
+    for (const name of ['settings.json', 'deploy-secrets.json']) {
+      const src = path.join(oldDir, name);
+      const dst = path.join(newDir, name);
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        fs.mkdirSync(newDir, { recursive: true });
+        fs.copyFileSync(src, dst);
+      }
+    }
+  } catch {
+    // 引き継ぎに失敗しても初期状態で起動できればよい
+  }
+}
+
+app.whenReady().then(() => {
+  migrateLegacyUserData();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   stopPreview();

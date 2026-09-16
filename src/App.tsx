@@ -235,7 +235,7 @@ export default function App() {
   if (screen === 'setup') {
     return (
       <div className="center-screen setup">
-        <h1>HugoWriter へようこそ</h1>
+        <h1>STV-HugoWriter へようこそ</h1>
         <p>
           記事を書く Hugo サイトのフォルダを選択してください。
           <br />
@@ -263,7 +263,7 @@ export default function App() {
           </button>
         </div>
         {setupError && <p className="error">{setupError}</p>}
-        <div className="version-footer">HugoWriter v{appVersion}</div>
+        <div className="version-footer">STV-HugoWriter v{appVersion}</div>
       </div>
     );
   }

@@ -100,7 +100,7 @@ export default function SettingsDialog({ settings, siteConfig, siteRoot, appVers
 
         <div className="modal-footer">
           <span className="version-label">
-            HugoWriter v{appVersion}
+            STV-HugoWriter v{appVersion}
             {gitInfo && !gitInfo.gitInstalled && ' | Git 未インストール (同期機能は使えません)'}
           </span>
           <div className="modal-actions">

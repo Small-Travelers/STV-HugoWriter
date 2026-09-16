@@ -22,10 +22,19 @@ body,
 }
 
 body {
-  font-family: 'Segoe UI', 'Yu Gothic UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', Meiryo, sans-serif;
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
 }
 
 .app {
@@ -335,7 +344,12 @@ body {
 .toastui-editor .ProseMirror,
 .toastui-editor-md-container .ProseMirror {
   font-size: var(--editor-font-size) !important;
-  font-family: 'Segoe UI', 'Yu Gothic UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', Meiryo, sans-serif !important;
+}
+
+.toastui-editor-defaultUI,
+.toastui-editor-popup {
+  font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', Meiryo, sans-serif !important;
 }
 
 /* ---------- プレビュー ---------- */
@@ -492,6 +506,111 @@ body {
 
 .error {
   color: var(--danger);
+}
+
+/* ---------- Git 連携 ---------- */
+.git-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+  margin-right: 2px;
+  border-right: 1px solid var(--border);
+}
+
+.git-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+
+.git-branch {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.git-branch::before {
+  content: '⎇ ';
+}
+
+.git-stat.warn {
+  color: #b45309;
+}
+
+/* ---------- セットアップ画面 ---------- */
+.setup-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 320px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.setup-divider::before,
+.setup-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.clone-row {
+  display: flex;
+  gap: 8px;
+  width: 460px;
+  max-width: 90vw;
+}
+
+.clone-row input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.small {
+  font-size: 12px;
+  margin: 0;
+}
+
+.version-footer {
+  position: fixed;
+  bottom: 12px;
+  right: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- モーダル下部 ---------- */
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.modal-footer .modal-actions {
+  margin-top: 0;
+}
+
+.version-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prewrap {
+  white-space: pre-wrap;
+  line-height: 1.8;
 }
 
 .toast {

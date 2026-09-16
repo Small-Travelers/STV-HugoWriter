@@ -1,15 +1,17 @@
 import { useState } from 'react';
-import { SiteConfig, UserSettings } from '../types';
+import { GitInfo, SiteConfig, UserSettings } from '../types';
 
 interface Props {
   settings: UserSettings;
   siteConfig: SiteConfig | null;
   siteRoot: string;
+  appVersion: string;
+  gitInfo: GitInfo | null;
   onChangeSite: () => void;
   onClose: (updated: Partial<UserSettings> | null) => void;
 }
 
-export default function SettingsDialog({ settings, siteConfig, siteRoot, onChangeSite, onClose }: Props) {
+export default function SettingsDialog({ settings, siteConfig, siteRoot, appVersion, gitInfo, onChangeSite, onClose }: Props) {
   const [tab, setTab] = useState<'user' | 'site'>('user');
   const [draft, setDraft] = useState<UserSettings>({ ...settings });
 
@@ -35,6 +37,15 @@ export default function SettingsDialog({ settings, siteConfig, siteRoot, onChang
                 value={draft.authorName}
                 onChange={(e) => setDraft({ ...draft, authorName: e.target.value })}
                 placeholder="例: 山田太郎"
+              />
+            </label>
+            <label className="fm-field full">
+              <span className="fm-label">メールアドレス (Git の更新履歴に記録されます)</span>
+              <input
+                type="text"
+                value={draft.authorEmail}
+                onChange={(e) => setDraft({ ...draft, authorEmail: e.target.value })}
+                placeholder="例: yamada@example.com (空欄でも可)"
               />
             </label>
             <label className="fm-field">
@@ -87,9 +98,15 @@ export default function SettingsDialog({ settings, siteConfig, siteRoot, onChang
           </div>
         )}
 
-        <div className="modal-actions">
-          <button className="btn" onClick={() => onClose(null)}>キャンセル</button>
-          <button className="btn primary" onClick={() => onClose(draft)}>保存</button>
+        <div className="modal-footer">
+          <span className="version-label">
+            HugoWriter v{appVersion}
+            {gitInfo && !gitInfo.gitInstalled && ' | Git 未インストール (同期機能は使えません)'}
+          </span>
+          <div className="modal-actions">
+            <button className="btn" onClick={() => onClose(null)}>キャンセル</button>
+            <button className="btn primary" onClick={() => onClose(draft)}>保存</button>
+          </div>
         </div>
       </div>
     </div>

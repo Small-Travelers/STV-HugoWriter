@@ -3,6 +3,7 @@
 export interface UserSettings {
   sitePath: string;
   authorName: string;
+  authorEmail: string;
   editorFontSize: number;
   editorInitialMode: 'wysiwyg' | 'markdown';
   autosave: boolean;
@@ -43,6 +44,24 @@ export interface ArticleSummary {
 
 export type FrontMatter = Record<string, unknown>;
 
+export interface GitInfo {
+  gitInstalled: boolean;
+  isRepo: boolean;
+  branch?: string;
+  remoteUrl?: string;
+  changedCount?: number;
+  ahead?: number;
+  behind?: number;
+  hasUpstream?: boolean;
+}
+
+export interface GitResult {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  conflict?: boolean;
+}
+
 interface Res {
   ok: boolean;
   error?: string;
@@ -64,6 +83,15 @@ export interface WpgenApi {
     save(path: string, fm: FrontMatter, body: string): Promise<Res>;
     create(section: string, title: string): Promise<Res & { path: string }>;
     delete(path: string): Promise<Res>;
+  };
+  git: {
+    info(): Promise<Res & { info: GitInfo }>;
+    pull(): Promise<GitResult>;
+    sync(): Promise<GitResult>;
+    clone(url: string): Promise<Res & { canceled?: boolean; root?: string }>;
+  };
+  app: {
+    info(): Promise<Res & { version: string }>;
   };
   preview: {
     start(): Promise<Res & { url?: string }>;

@@ -1,7 +1,7 @@
 {
   "name": "wpgen",
   "productName": "HugoWriter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "だれでも簡単に使える Hugo ライター & ジェネレーター",
   "main": "electron/main.js",
   "author": "wpgen project",
@@ -16,6 +16,7 @@
     "dist": "npm run build:renderer && electron-builder --win"
   },
   "dependencies": {
+    "@fontsource/noto-sans-jp": "^5.3.0",
     "@toast-ui/editor": "^3.2.2",
     "gray-matter": "^4.0.3"
   },

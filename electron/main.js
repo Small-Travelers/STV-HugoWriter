@@ -18,6 +18,7 @@ let mainWindow = null;
 const DEFAULT_USER_SETTINGS = {
   sitePath: '',
   authorName: '',
+  authorEmail: '',
   editorFontSize: 16,
   editorInitialMode: 'wysiwyg', // 'wysiwyg' | 'markdown'
   autosave: true,
@@ -321,6 +322,145 @@ function stopPreview() {
 }
 
 // ---------------------------------------------------------------------------
+// Git 連携
+// ---------------------------------------------------------------------------
+function runGit(args, cwd) {
+  return new Promise((resolve) => {
+    const p = spawn('git', args, {
+      cwd: cwd || undefined,
+      windowsHide: true,
+      // 端末での認証プロンプトは無効化 (Git Credential Manager の GUI は使われる)
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    let out = '';
+    let err = '';
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.stderr.on('data', (d) => { err += d.toString(); });
+    p.on('error', (e) => resolve({ code: -1, out, err: String(e.message || e) }));
+    p.on('exit', (code) => resolve({ code, out, err }));
+  });
+}
+
+function gitIdentityArgs() {
+  const s = loadUserSettings();
+  const name = s.authorName || 'HugoWriter';
+  const email = s.authorEmail || 'hugowriter@users.noreply.local';
+  return ['-c', `user.name=${name}`, '-c', `user.email=${email}`];
+}
+
+function isAuthError(text) {
+  return /Authentication failed|could not read Username|Permission denied|403|Repository not found/i.test(text);
+}
+
+const AUTH_HELP =
+  'リポジトリへの接続に失敗しました。GitHub へのサインインが済んでいるか、リポジトリへのアクセス権があるか確認してください。';
+
+async function gitInfo() {
+  const ver = await runGit(['--version']);
+  if (ver.code !== 0) return { gitInstalled: false, isRepo: false };
+  if (!site.root) return { gitInstalled: true, isRepo: false };
+
+  const inTree = await runGit(['rev-parse', '--is-inside-work-tree'], site.root);
+  if (inTree.code !== 0 || !inTree.out.includes('true')) {
+    return { gitInstalled: true, isRepo: false };
+  }
+  const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], site.root)).out.trim();
+  const remote = (await runGit(['remote', 'get-url', 'origin'], site.root)).out.trim();
+  const status = await runGit(['status', '--porcelain'], site.root);
+  const changedCount = status.out.split('\n').filter((l) => l.trim()).length;
+
+  let ahead = 0;
+  let behind = 0;
+  let hasUpstream = false;
+  const lr = await runGit(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], site.root);
+  if (lr.code === 0) {
+    hasUpstream = true;
+    const m = lr.out.trim().split(/\s+/);
+    ahead = Number(m[0] || 0);
+    behind = Number(m[1] || 0);
+  }
+  return { gitInstalled: true, isRepo: true, branch, remoteUrl: remote, changedCount, ahead, behind, hasUpstream };
+}
+
+/** 作業ツリーに変更があれば自動コミットする */
+async function gitCommitAll() {
+  const status = await runGit(['status', '--porcelain'], site.root);
+  if (!status.out.trim()) return { committed: false };
+  const add = await runGit(['add', '-A'], site.root);
+  if (add.code !== 0) throw new Error('変更の取り込みに失敗しました:\n' + add.err.slice(-500));
+  const s = loadUserSettings();
+  const stamp = new Date().toLocaleString('ja-JP');
+  const msg = `記事更新 (${s.authorName || '名前未設定'}, ${stamp})`;
+  const commit = await runGit([...gitIdentityArgs(), 'commit', '-m', msg], site.root);
+  if (commit.code !== 0) throw new Error('保存 (コミット) に失敗しました:\n' + (commit.err || commit.out).slice(-500));
+  return { committed: true };
+}
+
+/** 最新を取得 (必要ならローカル変更を先に自動コミット) */
+async function gitPull() {
+  assertSiteOpen();
+  await gitCommitAll();
+  const pull = await runGit([...gitIdentityArgs(), 'pull', '--rebase'], site.root);
+  if (pull.code !== 0) {
+    const text = pull.err + pull.out;
+    if (/CONFLICT|could not apply|Resolve all conflicts/i.test(text)) {
+      await runGit(['rebase', '--abort'], site.root);
+      return {
+        conflict: true,
+        message:
+          '他のメンバーの変更と競合したため、取得を中止しました。\nあなたの変更はローカルに保存されています。管理者に相談してください。',
+      };
+    }
+    if (isAuthError(text)) throw new Error(AUTH_HELP);
+    if (/no tracking information|There is no tracking/i.test(text)) {
+      return { message: 'リモートとの関連付けがないため、取得をスキップしました。' };
+    }
+    throw new Error('最新の取得に失敗しました:\n' + text.slice(-600));
+  }
+  return { message: '最新の状態を取得しました。' };
+}
+
+/** 変更を送信 (自動コミット → 取得 → プッシュ) */
+async function gitSync() {
+  assertSiteOpen();
+  const pulled = await gitPull();
+  if (pulled.conflict) return pulled;
+  const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], site.root)).out.trim() || 'main';
+  const push = await runGit(['push', '-u', 'origin', branch], site.root);
+  if (push.code !== 0) {
+    const text = push.err + push.out;
+    if (isAuthError(text)) throw new Error(AUTH_HELP);
+    throw new Error('送信に失敗しました:\n' + text.slice(-600));
+  }
+  return { message: '変更を送信しました。' };
+}
+
+/** リポジトリ URL からクローンして開く */
+async function gitClone(url) {
+  if (!/^(https?:\/\/|git@)/.test(url)) {
+    throw new Error('リポジトリの URL が正しくありません (https:// で始まる URL を入力してください)');
+  }
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'サイトを保存する場所 (親フォルダ) を選択',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (r.canceled) return { canceled: true };
+  const parent = r.filePaths[0];
+  const name = (url.split('/').pop() || 'site').replace(/\.git$/i, '') || 'site';
+  const dest = path.join(parent, name);
+  if (fs.existsSync(dest)) {
+    throw new Error(`フォルダ ${dest} は既に存在します。既にある場合は「サイトのフォルダを選択」から開いてください。`);
+  }
+  const clone = await runGit(['clone', url, dest]);
+  if (clone.code !== 0) {
+    const text = clone.err + clone.out;
+    if (isAuthError(text)) throw new Error(AUTH_HELP);
+    throw new Error('リポジトリの取得に失敗しました:\n' + text.slice(-600));
+  }
+  return { root: dest };
+}
+
+// ---------------------------------------------------------------------------
 // サイトを開く
 // ---------------------------------------------------------------------------
 function openSite(root) {
@@ -378,6 +518,13 @@ ipcMain.handle('articles:read', wrap((relPath) => readArticle(relPath)));
 ipcMain.handle('articles:save', wrap((relPath, fm, body) => saveArticle(relPath, fm, body)));
 ipcMain.handle('articles:create', wrap((section, title) => createArticle(section, title)));
 ipcMain.handle('articles:delete', wrap((relPath) => deleteArticle(relPath)));
+
+ipcMain.handle('git:info', wrap(async () => ({ info: await gitInfo() })));
+ipcMain.handle('git:pull', wrap(() => gitPull()));
+ipcMain.handle('git:sync', wrap(() => gitSync()));
+ipcMain.handle('git:clone', wrap((url) => gitClone(url)));
+
+ipcMain.handle('app:info', wrap(() => ({ version: app.getVersion() })));
 
 ipcMain.handle('preview:start', wrap(() => startPreview()));
 ipcMain.handle('preview:stop', wrap(() => stopPreview()));

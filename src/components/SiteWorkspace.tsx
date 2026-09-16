@@ -33,7 +33,15 @@ export default function SiteWorkspace({
   const [articles, setArticles] = useState<ArticleSummary[]>([]);
   const [listSections, setListSections] = useState<SectionDef[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // 記事の切り替え時にのみエディタを作り直すためのキー
+  // (画像添付によるパス変更ではエディタを維持する)
+  const [sessionId, setSessionId] = useState(0);
   const [reloadNonce, setReloadNonce] = useState(0);
+
+  const selectArticle = (p: string | null) => {
+    setSelectedPath(p);
+    setSessionId((n) => n + 1);
+  };
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
@@ -72,7 +80,7 @@ export default function SiteWorkspace({
         const params = new URLSearchParams(window.location.search);
         if (params.has('autoselect')) {
           const list = await api.articles.list(root);
-          if (list.ok && list.articles.length > 0) setSelectedPath(list.articles[0].path);
+          if (list.ok && list.articles.length > 0) selectArticle(list.articles[0].path);
         }
         if (params.has('autopreview')) {
           const p = await api.preview.start(root);
@@ -81,6 +89,29 @@ export default function SiteWorkspace({
         if (params.has('autodeploy')) {
           const dep = await api.deploy.run(root, params.get('autodeploy') || '', false);
           showToast(dep.ok ? `deploy OK: ${dep.files} files / ${dep.seconds}s` : `deploy NG: ${dep.error}`);
+        }
+        if (params.has('autoimage')) {
+          const list = await api.articles.list(root);
+          const target = list.ok ? list.articles.find((a) => !a.isIndex) : null;
+          if (target) {
+            const svg =
+              '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="160">' +
+              '<rect width="360" height="160" fill="#2563eb"/>' +
+              '<text x="180" y="90" font-size="28" fill="#fff" text-anchor="middle">テスト画像</text></svg>';
+            const b64 = btoa(unescape(encodeURIComponent(svg)));
+            const img = await api.articles.addImage(root, target.path, 'テスト画像.svg', b64);
+            if (img.ok) {
+              const art = await api.articles.read(root, img.path);
+              if (art.ok) {
+                await api.articles.save(root, img.path, art.frontMatter, `${art.body}\n\n![テスト画像](${img.name})\n`);
+              }
+              await refreshArticles();
+              selectArticle(img.path);
+              showToast(`image OK: ${img.path} / ${img.name}`);
+            } else {
+              showToast('image NG: ' + img.error);
+            }
+          }
         }
         if (params.has('autogit')) {
           const g = params.get('autogit') === 'pull' ? await api.git.pull(root) : await api.git.sync(root);
@@ -163,7 +194,7 @@ export default function SiteWorkspace({
     setShowNewDialog(false);
     if (r.ok) {
       await refreshArticles();
-      setSelectedPath(r.path);
+      selectArticle(r.path);
       refreshGit();
     } else {
       showToast(r.error || '記事を作成できませんでした');
@@ -175,7 +206,7 @@ export default function SiteWorkspace({
     if (!window.confirm(`「${a?.title ?? path}」をごみ箱に移動しますか?`)) return;
     const r = await api.articles.delete(root, path);
     if (r.ok) {
-      if (selectedPath === path) setSelectedPath(null);
+      if (selectedPath === path) selectArticle(null);
       await refreshArticles();
       refreshGit();
       showToast('ごみ箱に移動しました');
@@ -256,7 +287,7 @@ export default function SiteWorkspace({
           articles={articles}
           sections={sectionList}
           selectedPath={selectedPath}
-          onSelect={setSelectedPath}
+          onSelect={selectArticle}
           onNew={() => setShowNewDialog(true)}
           onDelete={handleDelete}
         />
@@ -264,13 +295,14 @@ export default function SiteWorkspace({
         <div className="editor-col">
           {selectedPath ? (
             <EditorPane
-              key={`${selectedPath}#${reloadNonce}`}
+              key={`s${sessionId}-r${reloadNonce}`}
               siteRoot={root}
               articlePath={selectedPath}
               siteConfig={config}
               settings={settings}
               onSaved={handleSaved}
               onError={showToast}
+              onPathRenamed={setSelectedPath}
             />
           ) : (
             <div className="center-screen muted">

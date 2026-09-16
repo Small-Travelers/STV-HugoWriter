@@ -10,6 +10,9 @@ declare module '@toast-ui/editor' {
     language?: string;
     usageStatistics?: boolean;
     autofocus?: boolean;
+    hooks?: {
+      addImageBlobHook?: (blob: Blob, callback: (url: string, altText?: string) => void) => void;
+    };
   }
 
   export default class Editor {

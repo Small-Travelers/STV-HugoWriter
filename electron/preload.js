@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('wpgen', {
     save: invoke('articles:save'),
     create: invoke('articles:create'),
     delete: invoke('articles:delete'),
+    addImage: invoke('articles:addImage'),
   },
   git: {
     info: invoke('git:info'),

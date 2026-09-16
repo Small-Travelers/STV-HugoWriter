@@ -112,6 +112,13 @@ export interface WpgenApi {
     save(siteId: string, path: string, fm: FrontMatter, body: string): Promise<Res>;
     create(siteId: string, section: string, title: string): Promise<Res & { path: string }>;
     delete(siteId: string, path: string): Promise<Res>;
+    /** 画像を記事に添付する。必要なら記事をページバンドルへ変換し、新しい記事パスを返す */
+    addImage(
+      siteId: string,
+      path: string,
+      fileName: string,
+      dataBase64: string
+    ): Promise<Res & { path: string; name: string; url: string }>;
   };
   git: {
     info(siteId: string): Promise<Res & { info: GitInfo }>;

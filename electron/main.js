@@ -1,11 +1,12 @@
 // STV-HugoWriter - Electron メインプロセス
 // サイト(Hugoプロジェクト)の読み書き・Hugoプレビューサーバの管理・設定管理を担当する。
 // [実験的] 複数サイトをタブで同時に開けるよう、サイト状態を siteId (=選択フォルダのパス) で管理する。
-const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, protocol, net: enet } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
 const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 const { spawn, spawnSync } = require('node:child_process');
 const matter = require('gray-matter');
 const TOML = require('@iarna/toml');
@@ -30,6 +31,49 @@ function parseFrontMatter(raw) {
 }
 
 const SITE_CONFIG_FILENAME = 'wpgen.site.json';
+
+// エディタ内で記事フォルダ (ページバンドル) 内の画像を表示するための独自スキーム。
+// 保存される Markdown には相対パスだけが書き込まれ、この URL は表示時にのみ使う。
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'wpgen-asset', privileges: { standard: true, supportFetchAPI: true, stream: true } },
+]);
+
+/** encodeURIComponent が素通しする括弧も Markdown を壊さないようにエスケープする */
+function encodeAssetParam(v) {
+  return encodeURIComponent(v).replace(/\(/g, '%28').replace(/\)/g, '%29');
+}
+
+function toAssetUrl(absPath, relName) {
+  return `wpgen-asset://img/?p=${encodeAssetParam(absPath)}&n=${encodeAssetParam(relName)}`;
+}
+
+/** 記事本文の相対画像参照を、エディタで表示できる wpgen-asset URL に変換する (読み込み時) */
+function decorateBody(bundleDir, body) {
+  return body.replace(/(!\[[^\]]*\]\()\s*([^)\s]+?)\s*(\))/g, (m, pre, src, post) => {
+    if (/^(https?:|data:|wpgen-asset:|\/\/|\/|#)/i.test(src)) return m;
+    let abs;
+    try {
+      abs = path.resolve(bundleDir, decodeURIComponent(src));
+    } catch {
+      return m;
+    }
+    if (!fs.existsSync(abs)) return m;
+    return pre + toAssetUrl(abs, src) + post;
+  });
+}
+
+/** wpgen-asset URL を相対参照へ戻す (保存時) */
+function undecorateBody(body) {
+  return body.replace(/wpgen-asset:\/\/img\/\?[^)\s"'<>]*/g, (u) => {
+    try {
+      const parsed = new URL(u);
+      const n = parsed.searchParams.get('n');
+      return n || u;
+    } catch {
+      return u;
+    }
+  });
+}
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
@@ -324,7 +368,8 @@ function readArticle(s, relPath) {
   for (const [k, v] of Object.entries(parsed.data || {})) {
     fm[k] = v instanceof Date ? v.toISOString() : v;
   }
-  return { frontMatter: fm, body: parsed.content.replace(/^\r?\n/, '') };
+  const body = decorateBody(path.dirname(abs), parsed.content.replace(/^\r?\n/, ''));
+  return { frontMatter: fm, body };
 }
 
 function saveArticle(s, relPath, frontMatter, body) {
@@ -336,7 +381,7 @@ function saveArticle(s, relPath, frontMatter, body) {
   } catch {
     // 判定できなければ YAML で保存
   }
-  const content = '\n' + body.replace(/^\n+/, '');
+  const content = '\n' + undecorateBody(body).replace(/^\n+/, '');
   const raw = useToml
     ? matter.stringify(content, frontMatter, TOML_MATTER_OPTIONS)
     : matter.stringify(content, frontMatter);
@@ -392,7 +437,69 @@ function createArticle(s, sectionDir, title) {
 
 function deleteArticle(s, relPath) {
   const abs = articleAbsPath(s, relPath);
-  return shell.trashItem(abs).then(() => ({ ok: true }));
+  const contentDir = path.join(s.hugoRoot, 'content');
+  // ページバンドル (記事名/index.md) は画像ごとフォルダをまとめて削除する
+  const isLeafBundle =
+    path.basename(abs).toLowerCase() === 'index.md' &&
+    path.resolve(path.dirname(abs)) !== path.resolve(contentDir);
+  const target = isLeafBundle ? path.dirname(abs) : abs;
+  return shell.trashItem(target).then(() => ({ ok: true }));
+}
+
+// ---------------------------------------------------------------------------
+// 画像の添付 (ページバンドル方式)
+// ---------------------------------------------------------------------------
+function sanitizeImageName(name) {
+  const rawExt = path.extname(name || '').toLowerCase();
+  const ext = /^\.(png|jpe?g|gif|webp|svg|avif|bmp)$/.test(rawExt) ? rawExt : '.png';
+  let base = path
+    .basename(name || '', path.extname(name || ''))
+    .replace(/[\\/:*?"<>|#%&{}$!'@+`=~^;,\s　]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!base) base = 'image-' + Date.now();
+  return { base, ext };
+}
+
+/** 記事に画像を追加する。
+ *  通常記事 (foo.md) はページバンドル (foo/index.md) へ自動変換し、
+ *  画像を同じフォルダに保存して相対参照で使えるようにする。 */
+function addImage(s, relPath, fileName, dataBase64) {
+  let abs = articleAbsPath(s, relPath);
+  if (!fs.existsSync(abs)) throw new Error('記事ファイルが見つかりません: ' + relPath);
+
+  const contentDir = path.join(s.hugoRoot, 'content');
+  let newRel = relPath;
+  const baseName = path.basename(abs).toLowerCase();
+  if (baseName !== 'index.md' && baseName !== '_index.md') {
+    // ページバンドルへ変換: foo.md → foo/index.md
+    const bundleDir = abs.replace(/\.(md|markdown)$/i, '');
+    const dst = path.join(bundleDir, 'index.md');
+    if (fs.existsSync(dst)) {
+      throw new Error('同名のフォルダ記事が既に存在するため変換できません: ' + dst);
+    }
+    fs.mkdirSync(bundleDir, { recursive: true });
+    fs.renameSync(abs, dst);
+    abs = dst;
+    newRel = path.relative(contentDir, dst).split(path.sep).join('/');
+  }
+
+  const dir = path.dirname(abs);
+  const { base, ext } = sanitizeImageName(fileName);
+  let name = base + ext;
+  let target = path.join(dir, name);
+  let i = 2;
+  while (fs.existsSync(target)) {
+    name = `${base}-${i}${ext}`;
+    target = path.join(dir, name);
+    i++;
+  }
+  const buf = Buffer.from(String(dataBase64 || ''), 'base64');
+  if (buf.length === 0) throw new Error('画像データが空です');
+  if (buf.length > 30 * 1024 * 1024) throw new Error('画像が大きすぎます (30MB まで)');
+  fs.writeFileSync(target, buf);
+
+  return { path: newRel, name, url: toAssetUrl(target, name) };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +540,7 @@ async function startPreview(s) {
   const args = [
     'server',
     '-D',
+    '--buildFuture',
     '--port', String(port),
     '--bind', '127.0.0.1',
     '--source', s.hugoRoot,
@@ -912,6 +1020,9 @@ ipcMain.handle('articles:read', wrap((siteId, relPath) => readArticle(getSite(si
 ipcMain.handle('articles:save', wrap((siteId, relPath, fm, body) => saveArticle(getSite(siteId), relPath, fm, body)));
 ipcMain.handle('articles:create', wrap((siteId, section, title) => createArticle(getSite(siteId), section, title)));
 ipcMain.handle('articles:delete', wrap((siteId, relPath) => deleteArticle(getSite(siteId), relPath)));
+ipcMain.handle('articles:addImage', wrap((siteId, relPath, fileName, dataBase64) =>
+  addImage(getSite(siteId), relPath, fileName, dataBase64)
+));
 
 ipcMain.handle('git:info', wrap(async (siteId) => ({ info: await gitInfo(getSite(siteId)) })));
 ipcMain.handle('git:pull', wrap((siteId) => gitPull(getSite(siteId))));
@@ -997,6 +1108,23 @@ function migrateLegacyUserData() {
 }
 
 app.whenReady().then(() => {
+  // エディタ内の画像表示用スキーム。開いているサイトの Hugo フォルダ内のファイルのみ返す
+  protocol.handle('wpgen-asset', (request) => {
+    try {
+      const u = new URL(request.url);
+      const p = u.searchParams.get('p');
+      if (!p) return new Response('bad request', { status: 400 });
+      const abs = path.normalize(p);
+      const allowed = [...sites.values()].some((s) =>
+        abs.toLowerCase().startsWith((s.hugoRoot + path.sep).toLowerCase())
+      );
+      if (!allowed || !fs.existsSync(abs)) return new Response('not found', { status: 404 });
+      return enet.fetch(pathToFileURL(abs).toString());
+    } catch {
+      return new Response('error', { status: 500 });
+    }
+  });
+
   migrateLegacyUserData();
   createWindow();
 });

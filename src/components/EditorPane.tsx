@@ -12,14 +12,18 @@ interface Props {
   settings: UserSettings;
   onSaved: () => void;
   onError: (msg: string) => void;
+  /** 画像添付でページバンドルに変換され、記事のパスが変わったときに呼ばれる */
+  onPathRenamed?: (newPath: string) => void;
 }
 
 type SaveState = 'clean' | 'dirty' | 'saving';
 
-export default function EditorPane({ siteRoot, articlePath, siteConfig, settings, onSaved, onError }: Props) {
+export default function EditorPane({ siteRoot, articlePath, siteConfig, settings, onSaved, onError, onPathRenamed }: Props) {
   const editorElRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Editor | null>(null);
   const fmRef = useRef<FrontMatter>({});
+  // 画像添付によるバンドル変換でパスが変わることがあるため ref で保持する
+  const pathRef = useRef(articlePath);
   const saveStateRef = useRef<SaveState>('clean');
   const autosaveTimer = useRef<number | null>(null);
 
@@ -37,7 +41,7 @@ export default function EditorPane({ siteRoot, articlePath, siteConfig, settings
     if (!editorRef.current || saveStateRef.current === 'saving') return;
     updateSaveState('saving');
     const body = editorRef.current.getMarkdown();
-    const r = await api.articles.save(siteRoot, articlePath, fmRef.current, body);
+    const r = await api.articles.save(siteRoot, pathRef.current, fmRef.current, body);
     if (r.ok) {
       updateSaveState('clean');
       setSavedAt(new Date().toLocaleTimeString('ja-JP'));
@@ -46,7 +50,7 @@ export default function EditorPane({ siteRoot, articlePath, siteConfig, settings
       updateSaveState('dirty');
       onError(r.error || '保存に失敗しました');
     }
-  }, [siteRoot, articlePath, onSaved, onError]);
+  }, [siteRoot, onSaved, onError]);
 
   const markDirty = useCallback(() => {
     if (saveStateRef.current === 'clean') updateSaveState('dirty');
@@ -58,9 +62,44 @@ export default function EditorPane({ siteRoot, articlePath, siteConfig, settings
     }
   }, [settings.autosave, settings.autosaveIntervalSec, doSave]);
 
+  // 画像の添付: ファイルとして記事のフォルダ (ページバンドル) に保存し、相対参照を挿入する
+  const handleImageBlob = useCallback(
+    async (blob: Blob, callback: (url: string, altText?: string) => void) => {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result));
+          fr.onerror = () => reject(fr.error);
+          fr.readAsDataURL(blob);
+        });
+        const base64 = dataUrl.split(',')[1] || '';
+        const fileName = (blob as File).name || 'image.png';
+        const r = await api.articles.addImage(siteRoot, pathRef.current, fileName, base64);
+        if (!r.ok) {
+          onError(r.error || '画像を保存できませんでした');
+          return;
+        }
+        if (r.path !== pathRef.current) {
+          pathRef.current = r.path;
+          onPathRenamed?.(r.path);
+        }
+        callback(r.url, fileName.replace(/\.[^.]+$/, ''));
+        markDirty();
+        onSaved();
+      } catch {
+        onError('画像の挿入に失敗しました');
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [siteRoot]
+  );
+  const handleImageBlobRef = useRef(handleImageBlob);
+  handleImageBlobRef.current = handleImageBlob;
+
   // 記事の読み込みとエディタの生成
   useEffect(() => {
     let disposed = false;
+    pathRef.current = articlePath;
     (async () => {
       const r = await api.articles.read(siteRoot, articlePath);
       if (!r.ok) {
@@ -79,6 +118,9 @@ export default function EditorPane({ siteRoot, articlePath, siteConfig, settings
         language: 'ja-JP',
         usageStatistics: false,
         autofocus: false,
+        hooks: {
+          addImageBlobHook: (blob, callback) => handleImageBlobRef.current(blob, callback),
+        },
       });
       editor.on('change', () => markDirty());
       editorRef.current = editor;
@@ -91,7 +133,7 @@ export default function EditorPane({ siteRoot, articlePath, siteConfig, settings
         // 未保存の変更が残っていれば、閉じる前に保存しておく
         if (saveStateRef.current === 'dirty') {
           try {
-            api.articles.save(siteRoot, articlePath, fmRef.current, editorRef.current.getMarkdown());
+            api.articles.save(siteRoot, pathRef.current, fmRef.current, editorRef.current.getMarkdown());
           } catch {
             // 保存できなくても閉じる処理は続行する
           }
